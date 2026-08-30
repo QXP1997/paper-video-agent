@@ -13,12 +13,20 @@ from qharness.tools.base import (
     ToolRuntimePolicy,
 )
 from qharness.tools.config import load_tool_policy
+from qharness.tools.cursor import ExpiringCursorStore
 from qharness.tools.executor import ToolExecutor
 from qharness.tools.hooks import ToolExecutionHook, ToolHookDecision
+from qharness.tools.providers import (
+    BuiltinToolProvider,
+    ToolProvider,
+    load_tool_providers,
+)
 from qharness.tools.registry import ToolRegistry
 
 __all__ = [
     "Tool",
+    "BuiltinToolProvider",
+    "ExpiringCursorStore",
     "ToolErrorCode",
     "ToolExecutionHook",
     "ToolExecutionPolicy",
@@ -28,8 +36,10 @@ __all__ = [
     "ToolExecutor",
     "ToolHookDecision",
     "ToolPolicyOverride",
+    "ToolProvider",
     "ToolParameters",
     "ToolRegistry",
     "ToolRuntimePolicy",
     "load_tool_policy",
+    "load_tool_providers",
 ]

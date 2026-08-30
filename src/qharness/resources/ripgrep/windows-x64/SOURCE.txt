@@ -1,0 +1,5 @@
+ripgrep 15.2.0
+platform: x86_64-pc-windows-msvc
+source: https://github.com/BurntSushi/ripgrep/releases/tag/15.2.0
+archive: ripgrep-15.2.0-x86_64-pc-windows-msvc.zip
+archive_sha256: 71B2FEF860ABE467217A538FF31DE02F5258807C0129F771846F87BD029AAFC5

@@ -16,7 +16,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError as PydanticValidationError
 
-from qharness.exception.error import ToolExecutionError
+from qharness.exception.error import ToolExecutionError, WorkspacePathError
 from qharness.tools.base import (
     Tool,
     ToolErrorCode,
@@ -125,6 +125,14 @@ class ToolExecutor:
                 request,
                 tool,
                 error.code,
+                str(error),
+                started_at,
+            )
+        except WorkspacePathError as error:
+            return await self._failure(
+                request,
+                tool,
+                ToolErrorCode.INVALID_ARGUMENTS,
                 str(error),
                 started_at,
             )

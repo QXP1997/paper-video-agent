@@ -51,6 +51,7 @@ model = "deepseek-v4-flash"
 .\.venv\Scripts\python.exe .\examples\04_thinking_tool_call.py
 .\.venv\Scripts\python.exe .\examples\05_tool_runtime.py
 .\.venv\Scripts\python.exe .\examples\06_workspace.py
+.\.venv\Scripts\python.exe .\examples\07_builtin_tools.py
 ```
 
 示例用途：
@@ -61,10 +62,19 @@ model = "deepseek-v4-flash"
 4. DeepSeek 思考模式工具调用及 `reasoning_content` 回填。
 5. 工具注册、参数校验、Hook 与执行次数限制。
 6. 工作区初始化、安全路径解析与越界访问拦截。
+7. 通过 `BuiltinToolProvider` 动态加载并执行工作区只读工具。
 
 ## 工作区边界
 
 `WorkspaceContext` 由客户端在每次 Agent Run 开始时根据用户选择的目录创建。所有文件工具都必须通过它解析路径，以阻止 `..`、绝对路径和符号链接逃出工作区。工作区边界不负责隔离 Shell 或外部代码；代码执行仍需单独经过 Sandbox 层。
+
+## 工具提供器
+
+`ToolProvider` 表示一种工具来源，负责异步发现或创建工具；`load_tool_providers()` 将多个 Provider 返回的工具统一注册到 `ToolRegistry`。内置 Provider 根据工作区创建 `list_directory`、`read_file`，并在找到可用 `ripgrep` 时增加 `search_text`。`ripgrep` 的查找顺序是：调用方显式传入的路径、QHarness 内置资源、系统 `PATH`。当前项目先内置官方 ripgrep 15.2.0 Windows x64 版本，因此这个平台不需要用户单独安装；其他平台暂时回退到系统 `PATH`。未来本地插件、MCP 和 A2A 工具可以实现同一接口。
+
+`list_directory` 使用 `page_size` 和短随机 `cursor` 滚动分页。首次调用不传 `cursor`；返回 `has_more=true` 时，将 `next_cursor` 原样传入下一次调用。真实分页状态只保存在当前进程内存中，默认 30 分钟滑动过期、最多保存 1024 个；每次有效访问都会重新计算 30 分钟有效期。游标会绑定工作区、目录、递归开关、最大深度和隐藏文件开关，不能跨查询复用；游标过期、应用重启或目录变化导致锚点消失时，需要从第一页重新读取。客户端可以通过 `BuiltinToolProvider` 的 `list_directory_cursor_ttl_seconds` 和 `list_directory_max_cursors` 动态调整这两个值。
+
+`read_file` 使用 `start_line` 和 `max_lines` 流式读取 UTF-8 文本，只保留本次请求的行并额外读取一行判断是否还有内容，不会把整个文件读入内存，也不再限制文件必须小于 2 MiB。返回 `has_more=true` 时，可以把 `next_start_line` 作为下一次调用的 `start_line`。
 
 ## 当前目录
 
@@ -76,6 +86,9 @@ src/qharness/model/models.py              模型调用领域对象
 src/qharness/exception/error.py           统一异常定义
 src/qharness/utils/text.py                通用字符串工具
 src/qharness/tools/                       工具注册、Hook 与受控执行器
+src/qharness/tools/builtin/               工作区内置只读工具
+src/qharness/tools/providers/             动态工具提供器
+src/qharness/resources/ripgrep/           随客户端分发的 ripgrep 与许可证
 src/qharness/workspace/                   工作区上下文和安全路径守卫
 src/qharness/backends/base.py             Backend 抽象接口
 src/qharness/backends/openai_compatible.py OpenAI-compatible 实现

@@ -24,6 +24,8 @@ from qharness.exception.error import (  # noqa: E402
     ModelBackendError,
     ModelConfigurationError,
     ToolConfigurationError,
+    ToolProviderError,
+    WorkspaceError,
 )
 
 
@@ -58,6 +60,10 @@ def run_example(main_function: Callable[[], Awaitable[None]]) -> None:
         print(f"配置错误：{error}")
     except ToolConfigurationError as error:
         print(f"工具配置错误：{error}")
+    except ToolProviderError as error:
+        print(f"工具提供器错误：{error}")
+    except WorkspaceError as error:
+        print(f"工作区错误：{error}")
     except ModelBackendError as error:
         print(
             f"模型调用错误：{error}\n"

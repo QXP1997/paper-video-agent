@@ -53,6 +53,10 @@ class ToolExecutionError(ToolError, RuntimeError):
         self.code = code
 
 
+class ToolProviderError(ToolError, RuntimeError):
+    """工具提供器加载工具失败。"""
+
+
 class WorkspaceError(QHarnessError):
     """工作区初始化或路径访问失败时使用的异常基类。"""
 

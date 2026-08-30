@@ -16,3 +16,12 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+qharness = [
+    "resources/ripgrep/windows-x64/rg.exe",
+    "resources/ripgrep/windows-x64/LICENSE-MIT",
+    "resources/ripgrep/windows-x64/UNLICENSE",
+    "resources/ripgrep/windows-x64/VERSION",
+    "resources/ripgrep/windows-x64/SOURCE.txt",
+]
