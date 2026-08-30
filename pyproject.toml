@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qharness"
+version = "0.1.0"
+description = "Coding Agent Harness"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "jsonschema>=4.23.0,<5.0.0",
+    "openai>=1.68.0,<3.0.0",
+    "pydantic>=2.10.0,<3.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
