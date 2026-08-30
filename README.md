@@ -50,6 +50,7 @@ model = "deepseek-v4-flash"
 .\.venv\Scripts\python.exe .\examples\03_tool_call.py
 .\.venv\Scripts\python.exe .\examples\04_thinking_tool_call.py
 .\.venv\Scripts\python.exe .\examples\05_tool_runtime.py
+.\.venv\Scripts\python.exe .\examples\06_workspace.py
 ```
 
 示例用途：
@@ -59,6 +60,11 @@ model = "deepseek-v4-flash"
 3. 普通模式工具调用闭环；
 4. DeepSeek 思考模式工具调用及 `reasoning_content` 回填。
 5. 工具注册、参数校验、Hook 与执行次数限制。
+6. 工作区初始化、安全路径解析与越界访问拦截。
+
+## 工作区边界
+
+`WorkspaceContext` 由客户端在每次 Agent Run 开始时根据用户选择的目录创建。所有文件工具都必须通过它解析路径，以阻止 `..`、绝对路径和符号链接逃出工作区。工作区边界不负责隔离 Shell 或外部代码；代码执行仍需单独经过 Sandbox 层。
 
 ## 当前目录
 
@@ -70,6 +76,7 @@ src/qharness/model/models.py              模型调用领域对象
 src/qharness/exception/error.py           统一异常定义
 src/qharness/utils/text.py                通用字符串工具
 src/qharness/tools/                       工具注册、Hook 与受控执行器
+src/qharness/workspace/                   工作区上下文和安全路径守卫
 src/qharness/backends/base.py             Backend 抽象接口
 src/qharness/backends/openai_compatible.py OpenAI-compatible 实现
 examples/                                 可直接运行的 main 示例

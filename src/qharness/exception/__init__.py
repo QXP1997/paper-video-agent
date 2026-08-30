@@ -9,6 +9,9 @@ from qharness.exception.error import (
     ToolError,
     ToolExecutionError,
     ToolRegistrationError,
+    WorkspaceConfigurationError,
+    WorkspaceError,
+    WorkspacePathError,
 )
 
 __all__ = [
@@ -19,4 +22,7 @@ __all__ = [
     "ToolError",
     "ToolExecutionError",
     "ToolRegistrationError",
+    "WorkspaceConfigurationError",
+    "WorkspaceError",
+    "WorkspacePathError",
 ]

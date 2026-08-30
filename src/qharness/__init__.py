@@ -10,6 +10,9 @@ from qharness.exception.error import (
     ToolError,
     ToolExecutionError,
     ToolRegistrationError,
+    WorkspaceConfigurationError,
+    WorkspaceError,
+    WorkspacePathError,
 )
 from qharness.model.models import (
     ChatMessage,
@@ -20,6 +23,7 @@ from qharness.model.models import (
     ToolCall,
     ToolDefinition,
 )
+from qharness.workspace import WorkspaceContext, WorkspacePathGuard
 
 __all__ = [
     "ChatMessage",
@@ -37,5 +41,10 @@ __all__ = [
     "ToolError",
     "ToolExecutionError",
     "ToolRegistrationError",
+    "WorkspaceConfigurationError",
+    "WorkspaceContext",
+    "WorkspaceError",
+    "WorkspacePathError",
+    "WorkspacePathGuard",
     "load_model_config",
 ]

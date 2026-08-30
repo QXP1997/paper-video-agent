@@ -51,3 +51,15 @@ class ToolExecutionError(ToolError, RuntimeError):
     def __init__(self, message: str, *, code: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class WorkspaceError(QHarnessError):
+    """工作区初始化或路径访问失败时使用的异常基类。"""
+
+
+class WorkspaceConfigurationError(WorkspaceError, ValueError):
+    """工作区根目录不存在或不是有效目录。"""
+
+
+class WorkspacePathError(WorkspaceError, ValueError):
+    """目标路径越界、不存在或类型不符合要求。"""
