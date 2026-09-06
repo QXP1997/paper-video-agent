@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src"
 CONFIG_PATH = PROJECT_ROOT / "config" / "model.toml"
 TOOL_CONFIG_PATH = PROJECT_ROOT / "config" / "tool.toml"
+SANDBOX_CONFIG_PATH = PROJECT_ROOT / "config" / "sandbox.toml"
 
 # 允许示例在未执行 editable install 时直接从源码目录导入。
 if str(SOURCE_ROOT) not in sys.path:
@@ -23,6 +24,9 @@ from qharness.model.config import load_model_config  # noqa: E402
 from qharness.exception.error import (  # noqa: E402
     ModelBackendError,
     ModelConfigurationError,
+    SandboxConfigurationError,
+    SandboxExecutionError,
+    SandboxUnavailableError,
     ToolConfigurationError,
     ToolProviderError,
     WorkspaceError,
@@ -62,6 +66,14 @@ def run_example(main_function: Callable[[], Awaitable[None]]) -> None:
         print(f"工具配置错误：{error}")
     except ToolProviderError as error:
         print(f"工具提供器错误：{error}")
+    except SandboxConfigurationError as error:
+        print(f"沙箱配置错误：{error}")
+    except SandboxUnavailableError as error:
+        print(f"沙箱不可用：{error}")
+        if error.setup_command:
+            print("初始化命令：" + " ".join(error.setup_command))
+    except SandboxExecutionError as error:
+        print(f"沙箱执行错误：{error}")
     except WorkspaceError as error:
         print(f"工作区错误：{error}")
     except ModelBackendError as error:

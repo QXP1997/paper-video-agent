@@ -13,6 +13,7 @@ __pycache__/
 .env.*
 config/model.toml
 config/tool.toml
+config/sandbox.toml
 
 # QHarness 本地运行数据
 .qharness/

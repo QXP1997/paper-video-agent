@@ -1,0 +1,38 @@
+# QHarness 沙箱动态配置模板。
+# 相对路径一律以本配置文件所在目录为基准。
+
+[sandbox]
+backend = "srt"
+timeout_seconds = 60.0
+max_stdout_chars = 100000
+max_stderr_chars = 100000
+runtime_directory = "../.qharness/runtime/sandbox"
+
+[sandbox.srt]
+# 未配置 node_path 时自动从系统 PATH 查找 node；也可以填写绝对路径。
+# node_path = "C:/Program Files/nodejs/node.exe"
+package_path = "../.qharness/runtime/srt/node_modules/@anthropic-ai/sandbox-runtime"
+# 固定版本可以避免 SRT 预览版升级后策略语义悄然变化。
+expected_version = "0.0.74"
+debug = false
+
+[sandbox.filesystem]
+# 先禁止读取用户主目录，再重新允许当前工作区；更具体的密钥文件仍禁止读取。
+allow_read = ["."]
+deny_read = ["~", ".env", "config/model.toml", "config/sandbox.toml"]
+# 命令可以修改工作区，但不能修改配置、Git Hook 和 QHarness 运行数据。
+allow_write = ["."]
+deny_write = [
+    ".env",
+    "config/model.toml",
+    "config/sandbox.toml",
+    ".git/config",
+    ".git/hooks",
+    ".qharness",
+]
+
+[sandbox.network]
+# 空白名单表示默认断网；需要联网的工具应只增加必要域名。
+allowed_domains = []
+denied_domains = []
+allow_local_binding = false

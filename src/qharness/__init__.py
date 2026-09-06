@@ -6,6 +6,10 @@ from qharness.exception.error import (
     ModelBackendError,
     ModelConfigurationError,
     QHarnessError,
+    SandboxConfigurationError,
+    SandboxError,
+    SandboxExecutionError,
+    SandboxUnavailableError,
     ToolConfigurationError,
     ToolError,
     ToolExecutionError,
@@ -25,6 +29,16 @@ from qharness.model.models import (
     ToolDefinition,
 )
 from qharness.workspace import WorkspaceContext, WorkspacePathGuard
+from qharness.sandbox import (
+    SandboxBackend,
+    SandboxConfig,
+    SandboxExecutionRequest,
+    SandboxExecutionResult,
+    SandboxStatus,
+    SrtSandboxBackend,
+    create_sandbox_backend,
+    load_sandbox_config,
+)
 
 __all__ = [
     "ChatMessage",
@@ -36,6 +50,16 @@ __all__ = [
     "ModelConfigurationError",
     "ModelEventType",
     "QHarnessError",
+    "SandboxConfigurationError",
+    "SandboxError",
+    "SandboxExecutionError",
+    "SandboxUnavailableError",
+    "SandboxBackend",
+    "SandboxConfig",
+    "SandboxExecutionRequest",
+    "SandboxExecutionResult",
+    "SandboxStatus",
+    "SrtSandboxBackend",
     "ToolCall",
     "ToolConfigurationError",
     "ToolDefinition",
@@ -48,5 +72,7 @@ __all__ = [
     "WorkspaceError",
     "WorkspacePathError",
     "WorkspacePathGuard",
+    "create_sandbox_backend",
     "load_model_config",
+    "load_sandbox_config",
 ]

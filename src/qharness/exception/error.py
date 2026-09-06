@@ -67,3 +67,28 @@ class WorkspaceConfigurationError(WorkspaceError, ValueError):
 
 class WorkspacePathError(WorkspaceError, ValueError):
     """目标路径越界、不存在或类型不符合要求。"""
+
+
+class SandboxError(QHarnessError):
+    """沙箱配置、预检或执行失败时使用的异常基类。"""
+
+
+class SandboxConfigurationError(SandboxError, ValueError):
+    """沙箱配置文件不完整或配置值不合法。"""
+
+
+class SandboxUnavailableError(SandboxError, RuntimeError):
+    """沙箱运行时缺失、版本不匹配或尚未完成系统初始化。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        setup_command: tuple[str, ...] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.setup_command = setup_command
+
+
+class SandboxExecutionError(SandboxError, RuntimeError):
+    """沙箱进程无法启动或沙箱基础设施异常。"""

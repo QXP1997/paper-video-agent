@@ -14,6 +14,7 @@ QHarness 是一个本地优先的 Coding Agent Harness。当前首先实现模�
 ```powershell
 Copy-Item .\config\model.example.toml .\config\model.toml
 Copy-Item .\config\tool.example.toml .\config\tool.toml
+Copy-Item .\config\sandbox.example.toml .\config\sandbox.toml
 ```
 
 然后编辑 `config/model.toml`，直接填写模型、API 地址和 DeepSeek API Key：
@@ -30,13 +31,13 @@ model = "deepseek-v4-flash"
 
 ## 动态配置
 
-模型配置位于 `config/model.toml`，工具执行策略位于 `config/tool.toml`。程序每次启动都会重新读取配置文件，不使用环境变量覆盖。
+模型配置位于 `config/model.toml`，工具执行策略位于 `config/tool.toml`，沙箱策略位于 `config/sandbox.toml`。程序每次启动都会重新读取配置文件，不使用环境变量覆盖。
 
 工具策略分为三层：`[tool_execution]` 保存整个 Run 的总调用数和总并发限制；`[tool_execution.defaults]` 保存所有工具的默认策略；`[tool_execution.tools.<工具名>]` 只覆盖指定工具的字段。没有具名配置的工具自动继承默认策略。
 
 全局 `max_total_calls` 和 `max_concurrency` 默认不限制；只有在 `[tool_execution]` 中显式配置正整数后才会启用对应限制。
 
-可提交到仓库的模板位于 [config/model.example.toml](config/model.example.toml) 和 [config/tool.example.toml](config/tool.example.toml)。
+可提交到仓库的模板位于 [config/model.example.toml](config/model.example.toml)、[config/tool.example.toml](config/tool.example.toml) 和 [config/sandbox.example.toml](config/sandbox.example.toml)。
 
 ## 工具参数
 
@@ -52,6 +53,7 @@ model = "deepseek-v4-flash"
 .\.venv\Scripts\python.exe .\examples\05_tool_runtime.py
 .\.venv\Scripts\python.exe .\examples\06_workspace.py
 .\.venv\Scripts\python.exe .\examples\07_builtin_tools.py
+.\.venv\Scripts\python.exe .\examples\08_srt_sandbox.py
 ```
 
 示例用途：
@@ -63,6 +65,21 @@ model = "deepseek-v4-flash"
 5. 工具注册、参数校验、Hook 与执行次数限制。
 6. 工作区初始化、安全路径解析与越界访问拦截。
 7. 通过 `BuiltinToolProvider` 动态加载并执行工作区只读工具。
+8. 检查 Anthropic SRT 状态，并在可用时执行一个受隔离的 Python 进程。
+
+## Anthropic SRT 沙箱
+
+QHarness 使用统一的 `SandboxBackend` 接口执行脚本和 CLI，当前实现为 `SrtSandboxBackend`。文件读取和修改仍由 QHarness 自己的工作区工具完成；只有外部进程执行进入沙箱。请求使用 `executable + arguments` 的 argv 形式，不把模型生成的内容拼成宿主 Shell 字符串。
+
+开发环境可以把官方 SRT npm 包安装到 QHarness 的本地运行目录：
+
+```powershell
+npm install --prefix .\.qharness\runtime\srt --omit=dev --ignore-scripts --no-audit --no-fund --package-lock=false @anthropic-ai/sandbox-runtime@0.0.74
+```
+
+Windows 版 SRT 还需要用户明确执行一次系统初始化，它会弹出 UAC，并创建专用的 `srt-sandbox` 本地账户和 WFP 网络规则。QHarness 不会自动执行这个提权操作；运行 `examples/08_srt_sandbox.py` 会检查状态并打印当前机器对应的准确初始化命令。SRT 当前仍是 Anthropic 的 Research Preview，Windows 支持为 Alpha，因此版本在配置中固定为 `0.0.74`，升级时需要重新验证策略语义。
+
+默认策略禁止网络访问，只允许读写当前工作区，同时保护模型配置、沙箱配置、`.env`、Git Hook 和 `.qharness` 运行目录。标准输出、标准错误、执行时间均有上限；超时、主动取消或输出超限时会终止整个进程树。`run_id` 和 `operation_id` 已保留在请求与结果中，后续可与文件变更日志和撤回功能关联。
 
 ## 工作区边界
 
@@ -81,6 +98,7 @@ model = "deepseek-v4-flash"
 ```text
 config/model.toml                         动态模型配置
 config/tool.toml                          动态工具执行策略
+config/sandbox.toml                       动态沙箱策略
 src/qharness/model/config.py              模型配置读取
 src/qharness/model/models.py              模型调用领域对象
 src/qharness/exception/error.py           统一异常定义
@@ -90,6 +108,7 @@ src/qharness/tools/builtin/               工作区内置只读工具
 src/qharness/tools/providers/             动态工具提供器
 src/qharness/resources/ripgrep/           随客户端分发的 ripgrep 与许可证
 src/qharness/workspace/                   工作区上下文和安全路径守卫
+src/qharness/sandbox/                     统一沙箱接口与 Anthropic SRT 后端
 src/qharness/backends/base.py             Backend 抽象接口
 src/qharness/backends/openai_compatible.py OpenAI-compatible 实现
 examples/                                 可直接运行的 main 示例
