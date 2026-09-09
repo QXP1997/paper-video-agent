@@ -1,5 +1,6 @@
 # QHarness 沙箱动态配置模板。
-# 相对路径一律以本配置文件所在目录为基准。
+# runtime 和 SRT 路径相对于本配置文件；文件系统策略中的相对路径
+# 则相对于当前 Agent Run 的工作区根目录。
 
 [sandbox]
 backend = "srt"
@@ -14,21 +15,21 @@ runtime_directory = "../.qharness/runtime/sandbox"
 package_path = "../.qharness/runtime/srt/node_modules/@anthropic-ai/sandbox-runtime"
 # 固定版本可以避免 SRT 预览版升级后策略语义悄然变化。
 expected_version = "0.0.74"
-debug = false
+# 开启后会把 SRT 原生日志实时转发到 QHarness 的 DEBUG 日志；生产环境可关闭。
+debug = true
 
 [sandbox.filesystem]
-# 先禁止读取用户主目录，再重新允许当前工作区；更具体的密钥文件仍禁止读取。
+# 允许读取当前工作区，并禁止读取工作区内的 .env。
+# Windows SRT 0.0.74 不宜直接拒绝整个用户主目录；需要保护的宿主配置目录
+# 应在实际 sandbox.toml 中追加为绝对路径。
 allow_read = ["."]
-deny_read = ["~", ".env", "config/model.toml", "config/sandbox.toml"]
-# 命令可以修改工作区，但不能修改配置、Git Hook 和 QHarness 运行数据。
+deny_read = [".env"]
+# 命令可以修改工作区文件，但不能修改环境变量文件和 Git 元数据。
+# QHarness 配置及运行数据位于工作区之外，不需要在这里重复拒绝。
 allow_write = ["."]
 deny_write = [
     ".env",
-    "config/model.toml",
-    "config/sandbox.toml",
-    ".git/config",
-    ".git/hooks",
-    ".qharness",
+    ".git",
 ]
 
 [sandbox.network]

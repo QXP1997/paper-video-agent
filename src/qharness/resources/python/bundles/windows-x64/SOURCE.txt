@@ -1,0 +1,12 @@
+QHarness 内置 Python 运行时来源
+
+项目：CPython 官方 NuGet 包
+版本：CPython 3.13.15
+目标：Windows x64
+用途：不依赖系统级 Python 的构建和应用内运行环境
+页面：https://www.nuget.org/packages/python/3.13.15
+下载：https://www.nuget.org/api/v2/package/python/3.13.15
+SHA-256：05357887df50d3153efc681bdf432c321d3e2f9ce5788f99f4515b27e8fda0ac
+
+包内 python.exe 由 Python Software Foundation 进行数字签名；归档内部包含
+CPython 及其依赖项目的许可证文件。

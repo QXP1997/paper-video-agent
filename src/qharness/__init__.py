@@ -2,6 +2,7 @@
 """QHarness 核心包。"""
 
 from qharness.model.config import ModelBackendConfig, load_model_config
+from qharness.logging import configure_logging
 from qharness.exception.error import (
     ModelBackendError,
     ModelConfigurationError,
@@ -72,6 +73,7 @@ __all__ = [
     "WorkspaceError",
     "WorkspacePathError",
     "WorkspacePathGuard",
+    "configure_logging",
     "create_sandbox_backend",
     "load_model_config",
     "load_sandbox_config",

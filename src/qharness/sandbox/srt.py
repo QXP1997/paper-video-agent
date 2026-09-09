@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import codecs
 import hashlib
 import json
+import logging
 import os
 import platform
 import shutil
@@ -14,6 +16,7 @@ import signal
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -29,12 +32,19 @@ from qharness.sandbox.base import (
     SandboxStatus,
 )
 from qharness.sandbox.config import SandboxConfig
+from qharness.sandbox.executables import resolve_sandbox_executable
 from qharness.workspace import WorkspaceContext
 
 
 _EXPECTED_PACKAGE_NAME = "@anthropic-ai/sandbox-runtime"
 _MINIMUM_NODE_VERSION = (20, 11, 0)
 _READ_CHUNK_BYTES = 16 * 1024
+_LOGGER = logging.getLogger(__name__)
+_SRT_DEBUG_PREFIX = "[SandboxDebug]"
+_SENSITIVE_SRT_LOG_MARKERS = (
+    "Command string mode (-c):",
+    "Original command:",
+)
 
 
 class SrtSandboxBackend(SandboxBackend):
@@ -85,23 +95,45 @@ class SrtSandboxBackend(SandboxBackend):
         SRT 不可用、配置错误或进程根本无法启动时抛出对应业务异常。
         """
 
+        _LOGGER.info(
+            "SRT 执行开始：run_id=%s，operation_id=%s，executable=%s，cwd=%s",
+            request.run_id or "-",
+            request.operation_id or "-",
+            request.executable,
+            request.cwd,
+        )
+
         # 第一步：执行只读预检。沙箱不可用时明确失败，绝不绕过 SRT
         # 直接在宿主机运行目标命令。
         status = await self.check_status()
         if not status.available:
+            _LOGGER.error("SRT 预检失败：%s", status.message)
             raise SandboxUnavailableError(
                 status.message,
                 setup_command=status.setup_command,
             )
 
-        # 第二步：把工作目录限制在当前工作区，并生成本次使用的 SRT JSON 策略。
+        # 第二步：把工作目录限制在当前工作区，并将 python 等逻辑名称解析为
+        # QHarness 自带运行时。首次使用时的摘要校验和解压放到工作线程执行，
+        # 避免阻塞 asyncio 事件循环。
         cwd = self._workspace.resolve_directory(request.cwd)
+        executable = await asyncio.to_thread(
+            resolve_sandbox_executable,
+            request.executable,
+            self._config.runtime_directory.parent / "python",
+        )
         settings_path = self._write_settings_file()
         node_path = self._resolve_node_path()
+        _LOGGER.debug(
+            "SRT 执行环境已解析：workspace=%s，settings=%s，node=%s",
+            self._workspace.root,
+            settings_path,
+            node_path,
+        )
 
-        # 第三步：组装独立 argv，实际形式如下：
-        # node cli.js --settings settings.json [--debug] -- executable args...
-        # “--”表示其后内容全部属于目标程序，防止被 SRT 当成自身参数。
+        # 第三步：组装 SRT CLI 参数。Linux/macOS 使用位置参数模式；Windows
+        # 的 SRT 0.0.74 会用 POSIX 单引号重组位置参数，导致 cmd.exe 把引号
+        # 当作文件名的一部分，因此改用 SRT 的原始命令字符串模式。
         command = [
             str(node_path),
             str(self._config.srt.cli_path),
@@ -110,7 +142,13 @@ class SrtSandboxBackend(SandboxBackend):
         ]
         if self._config.srt.debug:
             command.append("--debug")
-        command.extend(("--", request.executable, *request.arguments))
+        if os.name == "nt":
+            command.extend(
+                ("-c", _build_windows_sandbox_command(request, executable))
+            )
+        else:
+            # “--”表示其后内容全部属于目标程序，防止被 SRT 当成自身参数。
+            command.extend(("--", executable, *request.arguments))
 
         # 第四步：让 SRT CLI 拥有独立进程组。它不负责沙箱隔离，只用于
         # 超时或取消时从最外层 PID 开始清理 SRT、Python 及其所有后代进程。
@@ -134,9 +172,11 @@ class SrtSandboxBackend(SandboxBackend):
                 start_new_session=start_new_session,
             )
         except OSError as error:
+            _LOGGER.exception("SRT 进程无法启动。")
             raise SandboxExecutionError(
                 f"SRT 进程无法启动：{error}"
             ) from error
+        _LOGGER.info("SRT 隔离进程已启动：pid=%s", process.pid)
 
         # 第六步：每次请求可以覆盖全局输出上限。stdout 和 stderr 必须并发读取，
         # 否则其中一个系统管道写满后，子进程可能阻塞并形成死锁。
@@ -155,6 +195,9 @@ class SrtSandboxBackend(SandboxBackend):
                 process.stderr,
                 stderr_limit,
                 output_exceeded,
+                line_callback=(
+                    _log_srt_debug_line if self._config.srt.debug else None
+                ),
             )
         )
         stdin_task = asyncio.create_task(_feed_stdin(process, request.stdin))
@@ -187,6 +230,11 @@ class SrtSandboxBackend(SandboxBackend):
             if not done:
                 # asyncio.wait 在规定时间内没有任何任务完成，说明执行超时。
                 timed_out = True
+                _LOGGER.warning(
+                    "SRT 执行超时，正在终止进程树：pid=%s，timeout=%.3f 秒",
+                    process.pid,
+                    timeout,
+                )
                 await _terminate_process_tree(process)
             elif process_task in done:
                 # 进程正常结束优先，避免与同时抵达的取消信号产生错误归因。
@@ -194,9 +242,17 @@ class SrtSandboxBackend(SandboxBackend):
             elif cancellation_task is not None and cancellation_task in done:
                 # 调用方设置了 cancellation_event，终止完整进程树并记录归因。
                 cancelled = True
+                _LOGGER.info(
+                    "SRT 收到主动取消信号，正在终止进程树：pid=%s",
+                    process.pid,
+                )
                 await _terminate_process_tree(process)
             elif output_task in done and output_exceeded.is_set():
                 # stdout 或 stderr 达到上限后立即终止，避免无限输出消耗资源。
+                _LOGGER.warning(
+                    "SRT 输出达到上限，正在终止进程树：pid=%s",
+                    process.pid,
+                )
                 await _terminate_process_tree(process)
 
             # 第八步：终止信号发出后给进程树少量清理时间；仍未退出时，
@@ -209,6 +265,10 @@ class SrtSandboxBackend(SandboxBackend):
         except asyncio.CancelledError:
             # asyncio Task 自身被取消与 request.cancellation_event 不同：这里完成
             # 进程树和内部任务清理后，必须继续抛出 CancelledError 给上层感知。
+            _LOGGER.info(
+                "SRT execute 任务被取消，正在清理进程树：pid=%s",
+                process.pid,
+            )
             await _terminate_process_tree(process)
             await asyncio.gather(process.wait(), return_exceptions=True)
             for task in (
@@ -245,7 +305,7 @@ class SrtSandboxBackend(SandboxBackend):
         stdout, stdout_truncated = await stdout_task
         stderr, stderr_truncated = await stderr_task
         await asyncio.gather(stdin_task, return_exceptions=True)
-        return SandboxExecutionResult(
+        result = SandboxExecutionResult(
             exit_code=process.returncode,
             stdout=stdout,
             stderr=stderr,
@@ -257,6 +317,20 @@ class SrtSandboxBackend(SandboxBackend):
             run_id=request.run_id,
             operation_id=request.operation_id,
         )
+        log_method = _LOGGER.info if result.succeeded else _LOGGER.warning
+        log_method(
+            "SRT 执行结束：pid=%s，exit_code=%s，耗时=%.3f 秒，"
+            "timed_out=%s，cancelled=%s，stdout_truncated=%s，"
+            "stderr_truncated=%s",
+            process.pid,
+            result.exit_code,
+            result.duration_seconds,
+            result.timed_out,
+            result.cancelled,
+            result.stdout_truncated,
+            result.stderr_truncated,
+        )
+        return result
 
     def _read_package_version(self) -> str:
         """读取 package.json，避免误调用 PATH 中碰巧同名的程序。"""
@@ -542,12 +616,60 @@ def _process_group_options() -> tuple[int, bool]:
     return 0, True
 
 
+def _build_windows_sandbox_command(
+    request: SandboxExecutionRequest,
+    executable: str,
+) -> str:
+    """把目标 argv 编码为仅在 Windows 沙箱内部解析的 PowerShell 命令。
+
+    SRT CLI 的 ``-c`` 最终由沙箱账户下的 cmd.exe 执行。这里只向 cmd.exe
+    传递固定的 PowerShell 启动参数和 Base64 文本；实际 executable 与每个
+    argument 都保留为独立的 PowerShell 单引号字面量，不会在宿主 Shell 中
+    解析，也不会因空格或 ``&|<>$`` 等字符改变命令边界。
+    """
+
+    argv = (executable, *request.arguments)
+    invocation = "& " + " ".join(_powershell_literal(item) for item in argv)
+    script = (
+        "$ErrorActionPreference = 'Stop'\n"
+        # Windows 中文系统默认可能使用 GBK。QHarness 的跨平台输出协议统一为
+        # UTF-8，因此必须在目标进程启动前同步控制台、PowerShell 管道和
+        # Python 标准流编码，避免字节进入异步读取器后才被错误解码。
+        "$utf8 = [System.Text.UTF8Encoding]::new($false)\n"
+        "[Console]::InputEncoding = $utf8\n"
+        "[Console]::OutputEncoding = $utf8\n"
+        "$OutputEncoding = $utf8\n"
+        "$env:PYTHONUTF8 = '1'\n"
+        "$env:PYTHONIOENCODING = 'utf-8'\n"
+        f"{invocation}\n"
+        "if ($null -eq $LASTEXITCODE) { exit 0 }\n"
+        "exit $LASTEXITCODE\n"
+    )
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    return (
+        "powershell.exe -NoLogo -NoProfile -NonInteractive "
+        f"-EncodedCommand {encoded}"
+    )
+
+
+def _powershell_literal(value: str) -> str:
+    """返回不会执行变量展开或元字符解析的 PowerShell 字符串字面量。"""
+
+    return "'" + value.replace("'", "''") + "'"
+
+
 async def _read_limited_stream(
     stream: asyncio.StreamReader | None,
     max_chars: int,
     exceeded_event: asyncio.Event,
+    line_callback: Callable[[str], None] | None = None,
 ) -> tuple[str, bool]:
-    """增量解码输出，达到字符上限后通知执行器并继续排空管道。"""
+    """增量解码输出，达到字符上限后通知执行器并继续排空管道。
+
+    ``line_callback`` 只接收上限以内的完整文本行，主要用于实时转发 SRT
+    自身的调试日志。回调和最终结果共用同一个字符上限，防止日志转发绕过
+    沙箱输出限制。
+    """
 
     if stream is None:
         return "", False
@@ -555,12 +677,19 @@ async def _read_limited_stream(
     parts: list[str] = []
     remaining = max_chars
     truncated = False
+    pending_line = ""
     while True:
         chunk = await stream.read(_READ_CHUNK_BYTES)
         if not chunk:
             text = decoder.decode(b"", final=True)
             if text and remaining > 0:
-                parts.append(text[:remaining])
+                kept = text[:remaining]
+                parts.append(kept)
+                pending_line = _emit_complete_lines(
+                    pending_line,
+                    kept,
+                    line_callback,
+                )
                 if len(text) > remaining:
                     truncated = True
             break
@@ -569,13 +698,47 @@ async def _read_limited_stream(
         if remaining > 0:
             kept = text[:remaining]
             parts.append(kept)
+            pending_line = _emit_complete_lines(
+                pending_line,
+                kept,
+                line_callback,
+            )
             kept_length = len(kept)
             remaining -= len(kept)
         if len(text) > kept_length:
             truncated = True
         if truncated:
             exceeded_event.set()
+    if pending_line and line_callback is not None:
+        line_callback(pending_line.rstrip("\r"))
     return "".join(parts), truncated
+
+
+def _emit_complete_lines(
+    pending: str,
+    text: str,
+    callback: Callable[[str], None] | None,
+) -> str:
+    """向回调发送新出现的完整行，并返回尚未遇到换行符的尾部。"""
+
+    if callback is None:
+        return ""
+    pending += text
+    while "\n" in pending:
+        line, pending = pending.split("\n", 1)
+        callback(line.rstrip("\r"))
+    return pending
+
+
+def _log_srt_debug_line(line: str) -> None:
+    """实时记录 SRT 原生日志，并隐藏其中可能包含密钥的完整命令。"""
+
+    if not line.startswith(_SRT_DEBUG_PREFIX):
+        return
+    if any(marker in line for marker in _SENSITIVE_SRT_LOG_MARKERS):
+        _LOGGER.debug("SRT | %s 命令内容已隐藏", _SRT_DEBUG_PREFIX)
+        return
+    _LOGGER.debug("SRT | %s", line)
 
 
 async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:

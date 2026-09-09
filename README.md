@@ -71,15 +71,17 @@ model = "deepseek-v4-flash"
 
 QHarness 使用统一的 `SandboxBackend` 接口执行脚本和 CLI，当前实现为 `SrtSandboxBackend`。文件读取和修改仍由 QHarness 自己的工作区工具完成；只有外部进程执行进入沙箱。请求使用 `executable + arguments` 的 argv 形式，不把模型生成的内容拼成宿主 Shell 字符串。
 
+项目随包携带独立的 CPython 运行时。Agent 在 `SandboxExecutionRequest` 中只需填写 `executable="python"`（也支持 `python.exe`、`python3` 和 `python3.exe`），沙箱后端会自动选择当前平台的内置解释器，不读取系统 PATH，也不依赖用户安装的 Anaconda。首次调用会校验资源包 SHA-256，并解压到 `.qharness/runtime/python`；同版本后续调用直接复用。显式填写带目录的解释器路径时不会被替换。
+
 开发环境可以把官方 SRT npm 包安装到 QHarness 的本地运行目录：
 
 ```powershell
 npm install --prefix .\.qharness\runtime\srt --omit=dev --ignore-scripts --no-audit --no-fund --package-lock=false @anthropic-ai/sandbox-runtime@0.0.74
 ```
 
-Windows 版 SRT 还需要用户明确执行一次系统初始化，它会弹出 UAC，并创建专用的 `srt-sandbox` 本地账户和 WFP 网络规则。QHarness 不会自动执行这个提权操作；运行 `examples/08_srt_sandbox.py` 会检查状态并打印当前机器对应的准确初始化命令。SRT 当前仍是 Anthropic 的 Research Preview，Windows 支持为 Alpha，因此版本在配置中固定为 `0.0.74`，升级时需要重新验证策略语义。
+Windows 版 SRT 还需要用户明确执行一次系统初始化，它会弹出 UAC，并创建专用的 `srt-sandbox` 本地账户和 WFP 网络规则。QHarness 不会自动执行这个提权操作；运行 `examples/08_srt_sandbox.py` 会检查状态并打印当前机器对应的准确初始化命令。该示例使用 `.qharness/workspaces` 作为开发期托管工作区，不会把整个 QHarness 源码仓库授权给沙箱进程。SRT 当前仍是 Anthropic 的 Research Preview，Windows 支持为 Alpha，因此版本在配置中固定为 `0.0.74`，升级时需要重新验证策略语义。
 
-默认策略禁止网络访问，只允许读写当前工作区，同时保护模型配置、沙箱配置、`.env`、Git Hook 和 `.qharness` 运行目录。标准输出、标准错误、执行时间均有上限；超时、主动取消或输出超限时会终止整个进程树。`run_id` 和 `operation_id` 已保留在请求与结果中，后续可与文件变更日志和撤回功能关联。
+默认策略禁止网络访问，只允许写入当前托管工作区，并保护工作区内的 `.env` 和整个 `.git` 目录。SRT 的读取策略会继续沿用 Windows 原有 ACL，因此开发配置还会精确拒绝 QHarness 配置目录；不要通过拒绝整个 Windows 用户主目录来模拟读取白名单，SRT 0.0.74 在该路径上可能发生 ACL 超时。标准输出、标准错误、执行时间均有上限；超时、主动取消或输出超限时会终止整个进程树。`run_id` 和 `operation_id` 已保留在请求与结果中，后续可与文件变更日志和撤回功能关联。
 
 ## 工作区边界
 
@@ -107,6 +109,7 @@ src/qharness/tools/                       工具注册、Hook 与受控执行器
 src/qharness/tools/builtin/               工作区内置只读工具
 src/qharness/tools/providers/             动态工具提供器
 src/qharness/resources/ripgrep/           随客户端分发的 ripgrep 与许可证
+src/qharness/resources/python/            随客户端分发的独立 Python 归档与来源清单
 src/qharness/workspace/                   工作区上下文和安全路径守卫
 src/qharness/sandbox/                     统一沙箱接口与 Anthropic SRT 后端
 src/qharness/backends/base.py             Backend 抽象接口

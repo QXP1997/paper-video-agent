@@ -1,0 +1,6 @@
+{
+  "version": "3.13.15",
+  "archive": "python-runtime.nupkg",
+  "archive_root": "tools",
+  "sha256": "05357887df50d3153efc681bdf432c321d3e2f9ce5788f99f4515b27e8fda0ac"
+}

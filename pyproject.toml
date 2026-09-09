@@ -14,8 +14,16 @@ dependencies = [
     "pydantic>=2.10.0,<3.0.0",
 ]
 
+[tool.setuptools]
+# 资源文件全部在 package-data 中显式列出，避免把开发机上的本地运行数据
+# 或 Python 解压目录因为旧的 SOURCES 缓存而带进发布包。
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["src"]
+# 项目代码均为带 __init__.py 的普通包；关闭隐式 namespace 扫描，避免把
+# resources 下本地解压的 Python 标准库误识别为 QHarness 源码包。
+namespaces = false
 
 [tool.setuptools.package-data]
 qharness = [
@@ -24,4 +32,7 @@ qharness = [
     "resources/ripgrep/windows-x64/UNLICENSE",
     "resources/ripgrep/windows-x64/VERSION",
     "resources/ripgrep/windows-x64/SOURCE.txt",
+    "resources/python/bundles/windows-x64/python-runtime.nupkg",
+    "resources/python/bundles/windows-x64/runtime.json",
+    "resources/python/bundles/windows-x64/SOURCE.txt",
 ]

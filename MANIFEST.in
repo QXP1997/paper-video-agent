@@ -1,0 +1,7 @@
+# 本目录只可能包含开发阶段试解压的 Python 文件，不属于源码发布内容。
+prune src/qharness/resources/python/windows-x64
+
+# 正式运行时只分发经过固定摘要校验的压缩包和来源清单。
+include src/qharness/resources/python/bundles/windows-x64/python-runtime.nupkg
+include src/qharness/resources/python/bundles/windows-x64/runtime.json
+include src/qharness/resources/python/bundles/windows-x64/SOURCE.txt

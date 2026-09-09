@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
 
 # 本地虚拟环境和 IDE 配置
 .venv/
@@ -19,3 +21,7 @@ config/sandbox.toml
 .qharness/
 logs/
 artifacts/
+
+# 开发期间临时解压到资源目录的 Python 文件不提交；正式归档统一放在
+# resources/python/bundles 下，并由 pyproject.toml 明确加入发布包。
+src/qharness/resources/python/windows-x64/

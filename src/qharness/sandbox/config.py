@@ -3,12 +3,24 @@
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from qharness.exception import SandboxConfigurationError
+from qharness.utils.toml import (
+    TomlDocumentError,
+    load_toml_document,
+    read_bool,
+    read_float,
+    read_int,
+    read_optional_string,
+    read_required_string,
+    read_string,
+    read_string_list,
+    read_table,
+    reject_unknown_keys,
+    resolve_config_path,
+)
 
 
 _SANDBOX_KEYS = {
@@ -112,49 +124,44 @@ class SandboxConfig:
 def load_sandbox_config(config_path: str | Path) -> SandboxConfig:
     """从 TOML 文件动态读取沙箱配置，不使用环境变量覆盖。"""
 
-    path = Path(config_path).expanduser().resolve()
-    if not path.is_file():
-        raise SandboxConfigurationError(f"沙箱配置文件不存在：{path}")
-
     try:
-        with path.open("rb") as file:
-            document = tomllib.load(file)
-    except tomllib.TOMLDecodeError as error:
-        raise SandboxConfigurationError(f"沙箱配置文件格式错误：{error}") from error
+        path, document = load_toml_document(config_path, "沙箱配置")
+    except TomlDocumentError as error:
+        raise SandboxConfigurationError(str(error)) from error
 
     raw = document.get("sandbox")
     if not isinstance(raw, dict):
         raise SandboxConfigurationError("配置文件缺少 [sandbox] 节。")
 
     try:
-        _reject_unknown_keys(raw, _SANDBOX_KEYS, "sandbox")
-        srt_raw = _read_table(raw, "srt")
-        filesystem_raw = _read_table(raw, "filesystem")
-        network_raw = _read_table(raw, "network")
-        _reject_unknown_keys(srt_raw, _SRT_KEYS, "sandbox.srt")
-        _reject_unknown_keys(
+        reject_unknown_keys(raw, _SANDBOX_KEYS, "sandbox")
+        srt_raw = read_table(raw, "srt", "sandbox")
+        filesystem_raw = read_table(raw, "filesystem", "sandbox")
+        network_raw = read_table(raw, "network", "sandbox")
+        reject_unknown_keys(srt_raw, _SRT_KEYS, "sandbox.srt")
+        reject_unknown_keys(
             filesystem_raw,
             _FILESYSTEM_KEYS,
             "sandbox.filesystem",
         )
-        _reject_unknown_keys(network_raw, _NETWORK_KEYS, "sandbox.network")
+        reject_unknown_keys(network_raw, _NETWORK_KEYS, "sandbox.network")
 
-        backend = _read_string(raw, "backend", "srt", "sandbox")
+        backend = read_string(raw, "backend", "srt", "sandbox")
         if backend != "srt":
             raise ValueError("sandbox.backend 当前只支持 srt。")
 
-        package_text = _read_required_string(
+        package_text = read_required_string(
             srt_raw,
             "package_path",
             "sandbox.srt",
         )
-        node_text = _read_optional_string(srt_raw, "node_path", "sandbox.srt")
-        expected_version = _read_optional_string(
+        node_text = read_optional_string(srt_raw, "node_path", "sandbox.srt")
+        expected_version = read_optional_string(
             srt_raw,
             "expected_version",
             "sandbox.srt",
         )
-        runtime_text = _read_string(
+        runtime_text = read_string(
             raw,
             "runtime_directory",
             "../.qharness/runtime/sandbox",
@@ -162,55 +169,58 @@ def load_sandbox_config(config_path: str | Path) -> SandboxConfig:
         )
         return SandboxConfig(
             backend=backend,
-            timeout_seconds=_read_positive_float(
+            timeout_seconds=read_float(
                 raw,
                 "timeout_seconds",
                 60.0,
                 "sandbox",
+                positive=True,
             ),
-            max_stdout_chars=_read_positive_int(
+            max_stdout_chars=read_int(
                 raw,
                 "max_stdout_chars",
                 100_000,
                 "sandbox",
+                positive=True,
             ),
-            max_stderr_chars=_read_positive_int(
+            max_stderr_chars=read_int(
                 raw,
                 "max_stderr_chars",
                 100_000,
                 "sandbox",
+                positive=True,
             ),
-            runtime_directory=_resolve_config_path(path, runtime_text),
+            runtime_directory=resolve_config_path(path, runtime_text),
             srt=SrtRuntimeConfig(
                 node_path=(
-                    _resolve_config_path(path, node_text)
+                    resolve_config_path(path, node_text)
                     if node_text is not None
                     else None
                 ),
-                package_path=_resolve_config_path(path, package_text),
+                package_path=resolve_config_path(path, package_text),
                 expected_version=expected_version,
-                debug=_read_bool(srt_raw, "debug", False, "sandbox.srt"),
+                debug=read_bool(srt_raw, "debug", False, "sandbox.srt"),
             ),
             filesystem=SandboxFilesystemConfig(
-                allow_read=_read_string_list(
+                allow_read=read_string_list(
                     filesystem_raw,
                     "allow_read",
                     (".",),
                     "sandbox.filesystem",
                 ),
-                deny_read=_read_string_list(
+                deny_read=read_string_list(
                     filesystem_raw,
                     "deny_read",
                     (),
                     "sandbox.filesystem",
                 ),
-                allow_write=_read_string_list(
+                allow_write=read_string_list(
                     filesystem_raw,
                     "allow_write",
                     (".",),
                     "sandbox.filesystem",
                 ),
-                deny_write=_read_string_list(
+                deny_write=read_string_list(
                     filesystem_raw,
                     "deny_write",
                     (),
@@ -218,19 +228,19 @@ def load_sandbox_config(config_path: str | Path) -> SandboxConfig:
                 ),
             ),
             network=SandboxNetworkConfig(
-                allowed_domains=_read_string_list(
+                allowed_domains=read_string_list(
                     network_raw,
                     "allowed_domains",
                     (),
                     "sandbox.network",
                 ),
-                denied_domains=_read_string_list(
+                denied_domains=read_string_list(
                     network_raw,
                     "denied_domains",
                     (),
                     "sandbox.network",
                 ),
-                allow_local_binding=_read_bool(
+                allow_local_binding=read_bool(
                     network_raw,
                     "allow_local_binding",
                     False,
@@ -240,136 +250,3 @@ def load_sandbox_config(config_path: str | Path) -> SandboxConfig:
         )
     except (TypeError, ValueError) as error:
         raise SandboxConfigurationError(f"沙箱配置不合法：{error}") from error
-
-
-def _resolve_config_path(config_path: Path, value: str) -> Path:
-    """将相对路径固定解析为相对于配置文件所在目录。"""
-
-    candidate = Path(value).expanduser()
-    if not candidate.is_absolute():
-        candidate = config_path.parent / candidate
-    return candidate.resolve(strict=False)
-
-
-def _read_table(data: dict[str, Any], name: str) -> dict[str, Any]:
-    """读取必需的 TOML 子表。"""
-
-    value = data.get(name)
-    if not isinstance(value, dict):
-        raise ValueError(f"sandbox.{name} 必须是 TOML 表。")
-    return value
-
-
-def _reject_unknown_keys(
-    data: dict[str, Any],
-    allowed: set[str],
-    section: str,
-) -> None:
-    """拒绝拼写错误或当前版本不支持的配置项。"""
-
-    unknown = sorted(set(data) - allowed)
-    if unknown:
-        raise ValueError(f"{section} 包含未知配置项：{'、'.join(unknown)}")
-
-
-def _read_string(
-    data: dict[str, Any],
-    name: str,
-    default: str,
-    section: str,
-) -> str:
-    """读取非空字符串。"""
-
-    value = data.get(name, default)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{section}.{name} 必须是非空字符串。")
-    if "\x00" in value:
-        raise ValueError(f"{section}.{name} 不能包含空字符。")
-    return value.strip()
-
-
-def _read_required_string(
-    data: dict[str, Any],
-    name: str,
-    section: str,
-) -> str:
-    """读取没有默认值的必需字符串。"""
-
-    if name not in data:
-        raise ValueError(f"{section} 缺少 {name}。")
-    return _read_string(data, name, "", section)
-
-
-def _read_optional_string(
-    data: dict[str, Any],
-    name: str,
-    section: str,
-) -> str | None:
-    """读取可选非空字符串。"""
-
-    if name not in data:
-        return None
-    return _read_string(data, name, "", section)
-
-
-def _read_positive_float(
-    data: dict[str, Any],
-    name: str,
-    default: float,
-    section: str,
-) -> float:
-    """读取大于零的数字配置。"""
-
-    value = data.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{section}.{name} 必须是数字。")
-    if value <= 0:
-        raise ValueError(f"{section}.{name} 必须大于 0。")
-    return float(value)
-
-
-def _read_positive_int(
-    data: dict[str, Any],
-    name: str,
-    default: int,
-    section: str,
-) -> int:
-    """读取大于零的整数配置。"""
-
-    value = data.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{section}.{name} 必须是大于 0 的整数。")
-    return value
-
-
-def _read_bool(
-    data: dict[str, Any],
-    name: str,
-    default: bool,
-    section: str,
-) -> bool:
-    """严格读取布尔配置。"""
-
-    value = data.get(name, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"{section}.{name} 必须是布尔值。")
-    return value
-
-
-def _read_string_list(
-    data: dict[str, Any],
-    name: str,
-    default: tuple[str, ...],
-    section: str,
-) -> tuple[str, ...]:
-    """读取不含空值和空字符的字符串数组。"""
-
-    value = data.get(name, list(default))
-    if not isinstance(value, list):
-        raise ValueError(f"{section}.{name} 必须是字符串数组。")
-    result: list[str] = []
-    for item in value:
-        if not isinstance(item, str) or not item.strip() or "\x00" in item:
-            raise ValueError(f"{section}.{name} 只能包含非空字符串。")
-        result.append(item.strip())
-    return tuple(result)
