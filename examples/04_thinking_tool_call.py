@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 
-from _common import create_backend, print_usage, run_example
+from _common import create_backend, log_usage, run_example
 from qharness.model.models import ChatMessage, ChatRequest, ToolDefinition
+
+
+_LOGGER = logging.getLogger("qharness.examples.thinking_tool_call")
 
 
 def get_current_time(timezone: str) -> dict[str, str]:
@@ -56,12 +60,14 @@ async def main() -> None:
             )
         )
         if not first_response.message.tool_calls:
-            print("模型没有调用工具，直接回复：")
-            print(first_response.message.content)
+            _LOGGER.info(
+                "模型没有调用工具，直接回复：\n%s",
+                first_response.message.content or "<空>",
+            )
             return
 
-        print(
-            "已收到 reasoning_content：",
+        _LOGGER.info(
+            "已收到 reasoning_content：%s",
             bool(first_response.message.reasoning_content),
         )
 
@@ -86,9 +92,11 @@ async def main() -> None:
                 reasoning_effort="medium",
             )
         )
-        print("模型最终回复：")
-        print(final_response.message.content)
-        print_usage(final_response.usage)
+        _LOGGER.info(
+            "模型最终回复：\n%s",
+            final_response.message.content or "<空>",
+        )
+        log_usage(final_response.usage)
     finally:
         await backend.close()
 

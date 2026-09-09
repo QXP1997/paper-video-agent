@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import json
+import logging
 
-from _common import create_backend, print_usage, run_example
+from _common import create_backend, log_usage, run_example
 from qharness.model.models import ChatMessage, ChatRequest, ToolDefinition
+
+
+_LOGGER = logging.getLogger("qharness.examples.tool_call")
 
 
 def get_weather(location: str) -> dict[str, str]:
@@ -55,8 +59,10 @@ async def main() -> None:
             )
         )
         if not first_response.message.tool_calls:
-            print("模型没有调用工具，直接回复：")
-            print(first_response.message.content)
+            _LOGGER.info(
+                "模型没有调用工具，直接回复：\n%s",
+                first_response.message.content or "<空>",
+            )
             return
 
         # 必须先回填包含 tool_calls 的 assistant 消息，再追加每个工具结果。
@@ -64,7 +70,11 @@ async def main() -> None:
         for tool_call in first_response.message.tool_calls:
             arguments = json.loads(tool_call.function.arguments)
             result = get_weather(location=arguments["location"])
-            print(f"执行工具：{tool_call.function.name}，参数：{arguments}")
+            _LOGGER.info(
+                "执行工具：%s，参数：%s",
+                tool_call.function.name,
+                arguments,
+            )
             messages.append(
                 ChatMessage(
                     role="tool",
@@ -80,9 +90,11 @@ async def main() -> None:
                 thinking_mode="disabled",
             )
         )
-        print("模型最终回复：")
-        print(final_response.message.content)
-        print_usage(final_response.usage)
+        _LOGGER.info(
+            "模型最终回复：\n%s",
+            final_response.message.content or "<空>",
+        )
+        log_usage(final_response.usage)
     finally:
         await backend.close()
 

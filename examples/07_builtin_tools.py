@@ -1,9 +1,10 @@
-  # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """示例七：通过 Provider 动态加载并执行工作区只读工具。"""
 
 from __future__ import annotations
 
 import json
+import logging
 
 from _common import PROJECT_ROOT, TOOL_CONFIG_PATH, run_example
 from qharness.tools import (
@@ -18,6 +19,9 @@ from qharness.tools import (
 from qharness.workspace import WorkspaceContext
 
 
+_LOGGER = logging.getLogger("qharness.examples.builtin_tools")
+
+
 async def main() -> None:
     """动态注册内置工具，并依次验证目录、文件和文本搜索。"""
 
@@ -27,7 +31,7 @@ async def main() -> None:
         registry,
         [BuiltinToolProvider(workspace)],
     )
-    print(f"动态加载工具：{[tool.name for tool in loaded_tools]}\n")
+    _LOGGER.info("动态加载工具：%s", [tool.name for tool in loaded_tools])
 
     executor = ToolExecutor(
         registry,
@@ -44,9 +48,10 @@ async def main() -> None:
         },
     )
     first_page_result = await executor.execute(first_page_request, state)
-    print("工具：list_directory（第一页）")
-    print(first_page_result.to_model_content())
-    print()
+    _LOGGER.info(
+        "工具：list_directory（第一页）\n%s",
+        first_page_result.to_model_content(),
+    )
 
     # 如果存在下一页，直接把工具返回的游标传回，不需要自行解析游标内容。
     if first_page_result.success:
@@ -66,9 +71,10 @@ async def main() -> None:
                 ),
                 state,
             )
-            print("工具：list_directory（第二页）")
-            print(second_page_result.to_model_content())
-            print()
+            _LOGGER.info(
+                "工具：list_directory（第二页）\n%s",
+                second_page_result.to_model_content(),
+            )
 
     requests = [
         ToolExecutionRequest(
@@ -97,9 +103,12 @@ async def main() -> None:
 
     for request in requests:
         result = await executor.execute(request, state)
-        print(f"工具：{request.tool_name}，成功：{result.success}")
-        print(result.to_model_content())
-        print()
+        _LOGGER.info(
+            "工具：%s，成功：%s\n%s",
+            request.tool_name,
+            result.success,
+            result.to_model_content(),
+        )
 
 
 if __name__ == "__main__":

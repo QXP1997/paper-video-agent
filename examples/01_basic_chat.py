@@ -3,12 +3,17 @@
 
 from __future__ import annotations
 
-from _common import create_backend, print_usage, run_example
+import logging
+
+from _common import create_backend, log_usage, run_example
 from qharness.model.models import ChatMessage, ChatRequest
 
 
+_LOGGER = logging.getLogger("qharness.examples.basic_chat")
+
+
 async def main() -> None:
-    """发送固定问题并打印完整回复。"""
+    """发送固定问题并记录完整回复。"""
 
     backend = create_backend()
     try:
@@ -26,9 +31,8 @@ async def main() -> None:
         )
 
         response = await backend.complete(request)
-        print("模型回复：")
-        print(response.message.content)
-        print_usage(response.usage)
+        _LOGGER.info("模型回复：\n%s", response.message.content or "<空>")
+        log_usage(response.usage)
     finally:
         await backend.close()
 

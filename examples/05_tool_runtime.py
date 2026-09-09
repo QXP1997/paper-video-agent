@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from pydantic import Field
 
 from _common import TOOL_CONFIG_PATH, run_example
@@ -19,6 +21,9 @@ from qharness.tools import (
 )
 
 
+_LOGGER = logging.getLogger("qharness.examples.tool_runtime")
+
+
 class MultiplyParameters(ToolParameters):
     """乘法工具的参数模型。"""
 
@@ -32,17 +37,17 @@ def multiply(left: int, right: int) -> dict[str, int]:
     return {"result": left * right}
 
 
-class PrintToolHook(ToolExecutionHook):
-    """将工具生命周期输出到终端，演示 Hook 的使用方式。"""
+class LoggingToolHook(ToolExecutionHook):
+    """使用统一日志记录工具生命周期，演示 Hook 的使用方式。"""
 
     async def before_execute(
         self,
         request: ToolExecutionRequest,
         tool: Tool,
     ) -> None:
-        """打印即将执行的工具和已经通过校验的参数。"""
+        """记录即将执行的工具和已经通过校验的参数。"""
 
-        print(f"[before] {tool.name} 参数={request.arguments}")
+        _LOGGER.info("[before] %s 参数=%s", tool.name, request.arguments)
         return None
 
     async def after_execute(
@@ -51,11 +56,13 @@ class PrintToolHook(ToolExecutionHook):
         tool: Tool,
         result: ToolExecutionResult,
     ) -> None:
-        """打印成功结果和耗时。"""
+        """记录成功结果和耗时。"""
 
-        print(
-            f"[after] {tool.name} 结果={result.content} "
-            f"耗时={result.elapsed_seconds:.4f}s"
+        _LOGGER.info(
+            "[after] %s 结果=%s 耗时=%.4fs",
+            tool.name,
+            result.content,
+            result.elapsed_seconds,
         )
 
     async def on_error(
@@ -64,9 +71,13 @@ class PrintToolHook(ToolExecutionHook):
         tool: Tool | None,
         result: ToolExecutionResult,
     ) -> None:
-        """打印工具执行器生成的标准错误结果。"""
+        """记录工具执行器生成的标准错误结果。"""
 
-        print(f"[error] {request.tool_name} {result.to_model_content()}")
+        _LOGGER.error(
+            "[error] %s %s",
+            request.tool_name,
+            result.to_model_content(),
+        )
 
 
 async def main() -> None:
@@ -85,7 +96,7 @@ async def main() -> None:
     executor = ToolExecutor(
         registry,
         policy=load_tool_policy(TOOL_CONFIG_PATH),
-        hooks=[PrintToolHook()],
+        hooks=[LoggingToolHook()],
     )
     state = ToolExecutionState()
 
@@ -109,9 +120,10 @@ async def main() -> None:
 
     for request in requests:
         result = await executor.execute(request, state)
-        print(
-            f"调用完成：success={result.success}, "
-            f"error_code={result.error_code}\n"
+        _LOGGER.info(
+            "调用完成：success=%s，error_code=%s",
+            result.success,
+            result.error_code,
         )
 
 
