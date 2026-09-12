@@ -12,8 +12,9 @@ from qharness.sandbox.factory import create_sandbox_backend
 from qharness.workspace import (
     DulwichFileVersionStore,
     FileVersionStore,
-    SqliteWorkspaceHistoryRepository,
+    SqlAlchemyWorkspaceHistoryRepository,
     WorkspaceContext,
+    WorkspaceHistoryConfig,
     WorkspaceHistoryRepository,
     WorkspaceMutationService,
 )
@@ -27,7 +28,7 @@ def create_run_context(
     workspace_root: str | Path,
     sandbox_config: SandboxConfig,
     runtime_manager: RuntimeManager | None = None,
-    history_root: str | Path | None = None,
+    history_config: WorkspaceHistoryConfig | None = None,
     history_repository: WorkspaceHistoryRepository | None = None,
     version_store: FileVersionStore | None = None,
 ) -> RunContext:
@@ -35,8 +36,8 @@ def create_run_context(
 
     ``workspace_root`` 必须由客户端或服务端在完成租户授权后传入。本函数只
     建立运行边界，不根据 tenant_id 拼接或推断目录，避免标识被当成路径。
-    传入 ``history_root`` 时还会创建文件变更服务；私有历史目录必须位于
-    Agent 可访问的工作区之外。服务端也可以注入其他元数据与版本存储实现。
+    传入 ``history_config`` 时还会创建文件变更服务；数据库类型完全由
+    SQLAlchemy URL 决定，Dulwich 存储目录由同一配置动态提供。
     """
 
     workspace = WorkspaceContext(workspace_root)
@@ -49,19 +50,19 @@ def create_run_context(
         raise ValueError(
             "history_repository 和 version_store 必须同时提供或同时省略。"
         )
-    if history_root is not None and history_repository is not None:
-        raise ValueError("history_root 与自定义历史存储不能同时提供。")
+    if history_config is not None and history_repository is not None:
+        raise ValueError("history_config 与自定义历史存储不能同时提供。")
 
     resolved_repository = history_repository
     resolved_version_store = version_store
-    if history_root is not None:
-        resolved_repository = SqliteWorkspaceHistoryRepository(
-            history_root,
+    if history_config is not None:
+        resolved_repository = SqlAlchemyWorkspaceHistoryRepository.from_config(
+            history_config,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
         )
         resolved_version_store = DulwichFileVersionStore(
-            history_root,
+            history_config.storage_root,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
         )

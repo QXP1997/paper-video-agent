@@ -6,7 +6,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from qharness.tools.base import Tool
+from qharness.tools.builtin.apply_patch import create_apply_patch_tool
 from qharness.tools.builtin.file_history import (
+    create_get_file_history_tool,
+    create_get_workspace_status_tool,
     create_inspect_file_change_tool,
     create_rollback_file_change_tool,
 )
@@ -35,6 +38,9 @@ class FileMutationToolProvider(ToolProvider):
         return [
             create_write_file_tool(self.service),
             create_replace_text_tool(self.service),
+            create_apply_patch_tool(self.service),
+            create_get_file_history_tool(self.service),
+            create_get_workspace_status_tool(self.service),
             create_inspect_file_change_tool(self.service),
             create_rollback_file_change_tool(self.service),
         ]

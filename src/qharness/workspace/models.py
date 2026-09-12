@@ -73,6 +73,15 @@ class FileMutationResult:
     # 一次操作可以包含多个文件，为后续 apply_patch 预留扩展空间。
     files: tuple[FileChange, ...]
 
+    # 本次操作所基于的私有 Git Commit。
+    base_commit_id: str | None = None
+
+    # 本次操作完成后生成的私有 Git Commit。
+    commit_id: str | None = None
+
+    # 操作来源，常见值为 agent、external、rollback 或 legacy。
+    origin: str = "agent"
+
     # 自动验证由沙箱层执行；文件修改完成时默认尚未运行验证命令。
     validation_status: str = "not_run"
 
@@ -107,6 +116,9 @@ class FileMutationResult:
             "changed_files": list(self.changed_files),
             "files": [change.to_dict() for change in self.files],
             "diff": self.diff,
+            "base_commit_id": self.base_commit_id,
+            "commit_id": self.commit_id,
+            "origin": self.origin,
             "validation_status": self.validation_status,
             "unexpected_files": list(self.unexpected_files),
             "reverted_by_operation_id": self.reverted_by_operation_id,

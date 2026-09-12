@@ -15,6 +15,7 @@ QHarness 是一个本地优先的 Coding Agent Harness。当前首先实现模�
 Copy-Item .\config\model.example.toml .\config\model.toml
 Copy-Item .\config\tool.example.toml .\config\tool.toml
 Copy-Item .\config\sandbox.example.toml .\config\sandbox.toml
+Copy-Item .\config\history.example.toml .\config\history.toml
 ```
 
 然后编辑 `config/model.toml`，直接填写模型、API 地址和 DeepSeek API Key：
@@ -31,13 +32,13 @@ model = "deepseek-v4-flash"
 
 ## 动态配置
 
-模型配置位于 `config/model.toml`，工具执行策略位于 `config/tool.toml`，沙箱策略位于 `config/sandbox.toml`。程序每次启动都会重新读取配置文件，不使用环境变量覆盖。
+模型配置位于 `config/model.toml`，工具执行策略位于 `config/tool.toml`，沙箱策略位于 `config/sandbox.toml`，工作区历史配置位于 `config/history.toml`。程序每次启动都会重新读取配置文件，不使用环境变量覆盖。
 
 工具策略分为三层：`[tool_execution]` 保存整个 Run 的总调用数和总并发限制；`[tool_execution.defaults]` 保存所有工具的默认策略；`[tool_execution.tools.<工具名>]` 只覆盖指定工具的字段。没有具名配置的工具自动继承默认策略。
 
 全局 `max_total_calls` 和 `max_concurrency` 默认不限制；只有在 `[tool_execution]` 中显式配置正整数后才会启用对应限制。
 
-可提交到仓库的模板位于 [config/model.example.toml](config/model.example.toml)、[config/tool.example.toml](config/tool.example.toml) 和 [config/sandbox.example.toml](config/sandbox.example.toml)。
+可提交到仓库的模板位于 [config/model.example.toml](config/model.example.toml)、[config/tool.example.toml](config/tool.example.toml)、[config/sandbox.example.toml](config/sandbox.example.toml) 和 [config/history.example.toml](config/history.example.toml)。
 
 ## 工具参数
 
@@ -59,6 +60,7 @@ model = "deepseek-v4-flash"
 .\.venv\Scripts\python.exe .\examples\11_run_process_tool.py
 .\.venv\Scripts\python.exe .\examples\12_file_mutation_history.py
 .\.venv\Scripts\python.exe .\examples\13_file_rollback_conflict.py
+.\.venv\Scripts\python.exe .\examples\14_apply_patch.py
 ```
 
 示例用途：
@@ -76,6 +78,7 @@ model = "deepseek-v4-flash"
 11. 创建 RunContext，并通过受独立策略控制的 `run_process` 工具执行进程。
 12. 演示文件完整写入、精确替换、Diff、历史查询和安全回滚。
 13. 模拟用户后续编辑，验证回滚不会覆盖较新的文件内容。
+14. 一次补丁修改多个文件，查询 Dulwich Commit 历史并整体回滚。
 
 ## Anthropic SRT 沙箱
 
@@ -97,13 +100,19 @@ Windows 版 SRT 还需要一次系统初始化，它会创建专用的 `srt-sand
 
 `RunContext` 将 `tenant_id`、`workspace_id`、`run_id`、`WorkspaceContext`、`SandboxBackend`、工具调用计数和取消事件绑定到一次运行。它不是进程级单例；同一个 Harness 进程可以同时创建多个 RunContext。`workspace_root` 由完成租户授权的上层动态传入，不从租户标识拼接，也不写进全局配置。语言运行时可以跨 Run 复用，工作区、沙箱实例、工具注册表、ToolExecutor 和 ToolExecutionState 必须按 Run 隔离。
 
-传入 `history_root` 创建 RunContext 时，会同时创建 `WorkspaceMutationService`。业务服务只依赖 `WorkspaceHistoryRepository` 和 `FileVersionStore` 两个接口；本地默认实现分别是 `SqliteWorkspaceHistoryRepository` 与 `DulwichFileVersionStore`。未来多租户服务可以注入 PostgreSQL/MySQL 元数据仓库以及 S3/MinIO 版本存储，不需要修改文件写入、Diff 或回滚逻辑。私有历史目录必须位于 Agent 工作区之外，也不会修改用户项目自己的 `.git`。租户和工作区标识只用于计算固定长度目录摘要，逻辑工作区还会绑定规范化根路径，避免标识被复用到其他目录。
+传入 `history_config` 创建 RunContext 时，会同时创建 `WorkspaceMutationService`。业务服务只依赖 `WorkspaceHistoryRepository` 和 `FileVersionStore` 两个接口，统一使用 `SqlAlchemyWorkspaceHistoryRepository`。数据库类型由 `history.database.url` 决定：本地 SQLite 只使用一个 `history.sqlite3` 文件，所有租户和工作区共享表结构，并通过 `tenant_id`、`workspace_id` 做逻辑隔离；同一 Harness 进程还会按配置复用同一个 SQLAlchemy Engine 和连接池。以后切换 MySQL 只需把 URL 改为 `mysql+pymysql://...`，调用入口和业务代码都不变。
 
-`write_file`、`replace_text` 每次实际修改都会返回 unified diff、前后 Git Blob 编号、SHA-256 和 `operation_id`；`inspect_file_change` 可再次取得审查信息，`rollback_file_change` 用操作编号恢复原版本。回滚前必须确认当前文件仍等于原操作的修改后版本，如果用户或另一个 Run 已经产生更新，则返回稳定错误码 `conflict`，不会覆盖新内容。回滚本身也是一条新记录。当前版本支持单文件原子修改和回滚，多文件 `apply_patch` 将复用同一服务扩展。
+Dulwich 与操作数据库的存储方式不同：数据库是全局共用的一个库，Dulwich 私有裸仓库仍按租户和工作区使用固定长度摘要子目录，因为每个工作区需要独立的 HEAD、Tree 和 Commit 链。私有版本目录必须位于 Agent 工作区之外，也不会修改用户项目自己的 `.git`。逻辑工作区还会在数据库中绑定规范化根路径，避免同一组租户和工作区标识被复用于其他目录。
+
+职责已经拆分为两层：数据库表 `workspace_operations` 与 `workspace_operation_files` 只保存操作状态、来源、Run、涉及路径以及 `base_commit_id`/`commit_id` 关联；Dulwich 私有裸仓库保存 Blob、Tree、Commit，并作为版本内容和 Diff 的唯一事实来源。早期 sqlite3 版本的操作摘要会自动迁移为 `origin=legacy`，但因为旧记录没有 Tree/Commit，不能伪造为新的可回滚历史。
+
+`write_file`、`replace_text` 和 `apply_patch` 每次实际修改都会返回 unified diff、前后 Blob、SHA-256、`operation_id`、`base_commit_id` 和 `commit_id`。`apply_patch` 支持在一个业务操作和一个 Commit 中新增、更新、删除多个 UTF-8 文件；任一 hunk 不匹配时拒绝执行，落盘中途失败时补偿恢复已经修改的文件。`inspect_file_change` 根据操作表中的 Commit 关联实时计算 Diff；`get_file_history` 直接遍历 Dulwich Commit 链；`get_workspace_status` 比较当前磁盘与私有 HEAD，因此能够发现用户、IDE、沙箱或其他进程产生的未提交变化。
+
+所有修改前都会先检查当前磁盘。如果发现工具之外的文件变化，会先建立独立的 `external_checkpoint` Commit，避免把用户修改混入 Agent Commit。`rollback_file_change` 反向应用目标操作涉及的全部文件，而不是重置整个工作区；回滚前必须确认这些文件仍等于目标操作的修改后版本。只要其中一个文件后来发生变化，就返回稳定错误码 `conflict`，不会覆盖用户内容。回滚本身也会生成新的操作和 Commit。
 
 ## 工具提供器
 
-`ToolProvider` 表示一种工具来源，负责异步发现或创建工具；`load_tool_providers()` 将多个 Provider 返回的工具统一注册到 `ToolRegistry`。`BuiltinToolProvider` 根据工作区创建 `list_directory`、`read_file`，并在找到可用的 ripgrep 时增加 `search_text`；`FileMutationToolProvider` 创建写入、替换、历史查询和回滚工具；`SandboxToolProvider` 根据 RunContext 创建 `run_process`。`run_process` 只把结构化的 `executable + arguments` 转换成 `SandboxExecutionRequest`，不在 Handler 内保存调用次数、并发、审批或工具超时，这些全部由外层 ToolExecutor 按工具名称实施。未来本地插件、MCP 和 A2A 工具可以实现同一接口。
+`ToolProvider` 表示一种工具来源，负责异步发现或创建工具；`load_tool_providers()` 将多个 Provider 返回的工具统一注册到 `ToolRegistry`。`BuiltinToolProvider` 根据工作区创建 `list_directory`、`read_file`，并在找到可用的 ripgrep 时增加 `search_text`；`FileMutationToolProvider` 创建 `write_file`、`replace_text`、`apply_patch`、`inspect_file_change`、`get_file_history`、`get_workspace_status` 和 `rollback_file_change`；`SandboxToolProvider` 根据 RunContext 创建 `run_process`。`run_process` 只把结构化的 `executable + arguments` 转换成 `SandboxExecutionRequest`，不在 Handler 内保存调用次数、并发、审批或工具超时，这些全部由外层 ToolExecutor 按工具名称实施。未来本地插件、MCP 和 A2A 工具可以实现同一接口。
 
 每个 Run 应创建自己的 ToolRegistry、ToolExecutor 和 ToolExecutionState。工具默认策略以及 `[tool_execution.tools.run_process]` 等具名覆盖仍来自统一配置，但实际计数和并发信号量不跨 Run 共享。`ripgrep` 的查找顺序是：调用方显式传入的路径、QHarness 内置资源、系统 `PATH`。当前项目先内置官方 ripgrep 15.2.0 Windows x64 版本，因此这个平台不需要用户单独安装；其他平台暂时回退到系统 `PATH`。
 
@@ -117,6 +126,7 @@ Windows 版 SRT 还需要一次系统初始化，它会创建专用的 `srt-sand
 config/model.toml                         动态模型配置
 config/tool.toml                          动态工具执行策略
 config/sandbox.toml                       动态沙箱策略
+config/history.toml                       动态历史数据库与 Dulwich 存储配置
 src/qharness/model/config.py              模型配置读取
 src/qharness/model/models.py              模型调用领域对象
 src/qharness/exception/error.py           统一异常定义
@@ -130,7 +140,7 @@ src/qharness/resources/node/              托管 Node 下载地址、版本和�
 src/qharness/resources/srt/               固定版本 SRT 的 npm 清单与锁文件
 src/qharness/runtime/                     托管运行时清单、校验、安全安装与名称解析
 src/qharness/run/                         单次 Run 的租户、工作区、沙箱和取消上下文
-src/qharness/workspace/                   路径守卫、变更历史、Diff 与回滚服务
+src/qharness/workspace/                   路径守卫、SQLAlchemy 台账、Dulwich 历史、补丁与回滚
 src/qharness/sandbox/                     统一沙箱接口与 Anthropic SRT 后端
 src/qharness/backends/base.py             Backend 抽象接口
 src/qharness/backends/openai_compatible.py OpenAI-compatible 实现

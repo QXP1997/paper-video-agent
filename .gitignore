@@ -16,6 +16,7 @@ dist/
 config/model.toml
 config/tool.toml
 config/sandbox.toml
+config/history.toml
 
 # QHarness 本地运行数据
 .qharness/

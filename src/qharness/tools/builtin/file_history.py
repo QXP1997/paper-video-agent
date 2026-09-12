@@ -20,6 +20,71 @@ class FileOperationParameters(ToolParameters):
     )
 
 
+class FileHistoryParameters(ToolParameters):
+    """查询某个文件的私有 Git 提交历史时使用的参数。"""
+
+    path: str = Field(description="工作区相对文件路径；文件当前可以已经被删除。")
+    limit: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="最多返回多少次文件变化，默认 20，最大 100。",
+    )
+
+
+class WorkspaceStatusParameters(ToolParameters):
+    """工作区状态工具没有业务参数。"""
+
+
+def create_get_file_history_tool(service: WorkspaceMutationService) -> Tool:
+    """创建直接查询 Dulwich Commit 链的文件历史工具。"""
+
+    def get_file_history(path: str, limit: int = 20) -> dict[str, object]:
+        """返回文件最近发生变化的 Commit，不读取数据库缓存 Diff。"""
+
+        entries = service.file_history(path, limit=limit)
+        return {
+            "path": path.replace("\\", "/"),
+            "entries": [entry.to_dict() for entry in entries],
+            "count": len(entries),
+        }
+
+    return Tool(
+        name="get_file_history",
+        description=(
+            "从 QHarness 私有 Dulwich Commit 链查询某个文件的真实版本历史，"
+            "包括 Commit、父 Commit、操作说明、时间和创建/修改/删除类型。"
+        ),
+        parameters=FileHistoryParameters,
+        handler=get_file_history,
+    )
+
+
+def create_get_workspace_status_tool(service: WorkspaceMutationService) -> Tool:
+    """创建查看当前磁盘未提交变化的只读工具。"""
+
+    def get_workspace_status() -> dict[str, object]:
+        """比较 Dulwich HEAD 和当前工作区，不生成 Commit。"""
+
+        status = service.workspace_status()
+        return {
+            "head_commit_id": status.head_commit_id,
+            "is_dirty": status.is_dirty,
+            "changed_files": [change.path for change in status.files],
+            "files": [change.to_dict() for change in status.files],
+        }
+
+    return Tool(
+        name="get_workspace_status",
+        description=(
+            "比较 Dulwich 私有历史 HEAD 与当前磁盘文件，返回用户、编辑器、"
+            "沙箱或其他进程产生但尚未建立检查点的变化；本工具不会提交文件。"
+        ),
+        parameters=WorkspaceStatusParameters,
+        handler=get_workspace_status,
+    )
+
+
 def create_inspect_file_change_tool(
     service: WorkspaceMutationService,
 ) -> Tool:
@@ -33,8 +98,8 @@ def create_inspect_file_change_tool(
     return Tool(
         name="inspect_file_change",
         description=(
-            "按 operation_id 查询一次历史文件变更，返回操作状态、文件列表、"
-            "前后版本和 Diff；本工具不会读取或修改当前文件。"
+            "按 operation_id 查询一次工作区操作。数据库只提供 Commit 关联和"
+            "操作状态，文件列表、Blob 版本和 Diff 均从 Dulwich 实时计算。"
         ),
         parameters=FileOperationParameters,
         handler=inspect_file_change,
@@ -54,8 +119,8 @@ def create_rollback_file_change_tool(
     return Tool(
         name="rollback_file_change",
         description=(
-            "把一次已应用的单文件变更恢复到操作前状态。若文件此后又被用户"
-            "或其他 Run 修改，本工具会拒绝覆盖，并要求重新检查当前内容。"
+            "反向应用一次已完成的单文件或多文件 Commit。若其中任一文件此后"
+            "又被用户或其他 Run 修改，本工具会拒绝覆盖整个回滚操作。"
         ),
         parameters=FileOperationParameters,
         handler=rollback_file_change,

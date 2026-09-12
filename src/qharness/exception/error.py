@@ -78,7 +78,11 @@ class WorkspaceConflictError(WorkspaceMutationError):
 
 
 class WorkspaceHistoryError(WorkspaceMutationError):
-    """工作区私有历史仓库或 SQLite 索引不可用。"""
+    """工作区私有 Git 历史或 SQLAlchemy 操作台账不可用。"""
+
+
+class WorkspaceHistoryConfigurationError(WorkspaceHistoryError, ValueError):
+    """工作区历史数据库 URL 或本地版本目录配置不合法。"""
 
 
 class RuntimeManagerError(QHarnessError):

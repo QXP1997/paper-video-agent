@@ -18,9 +18,10 @@ from qharness.tools import (
 )
 from qharness.workspace import (
     DulwichFileVersionStore,
-    SqliteWorkspaceHistoryRepository,
+    SqlAlchemyWorkspaceHistoryRepository,
     WorkspaceContext,
     WorkspaceMutationService,
+    load_workspace_history_config,
 )
 
 
@@ -28,7 +29,7 @@ _LOGGER = logging.getLogger("qharness.examples.file_mutation_history")
 
 # 示例数据固定放在开发工作区中，不会修改 QHarness 项目源码。
 _DEMO_WORKSPACE = SANDBOX_WORKSPACE_ROOT / "file-mutation-demo"
-_HISTORY_ROOT = PROJECT_ROOT / ".qharness" / "history"
+_HISTORY_CONFIG_PATH = PROJECT_ROOT / "config" / "history.example.toml"
 _DEMO_FILE = "hello.py"
 
 
@@ -37,13 +38,14 @@ async def main() -> None:
 
     _DEMO_WORKSPACE.mkdir(parents=True, exist_ok=True)
     workspace = WorkspaceContext(_DEMO_WORKSPACE)
-    history_repository = SqliteWorkspaceHistoryRepository(
-        _HISTORY_ROOT,
+    history_config = load_workspace_history_config(_HISTORY_CONFIG_PATH)
+    history_repository = SqlAlchemyWorkspaceHistoryRepository.from_config(
+        history_config,
         tenant_id="local-demo-tenant",
         workspace_id="file-mutation-demo",
     )
     version_store = DulwichFileVersionStore(
-        _HISTORY_ROOT,
+        history_config.storage_root,
         tenant_id="local-demo-tenant",
         workspace_id="file-mutation-demo",
     )

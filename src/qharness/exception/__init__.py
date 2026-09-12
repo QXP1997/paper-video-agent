@@ -23,6 +23,7 @@ from qharness.exception.error import (
     WorkspaceConflictError,
     WorkspaceError,
     WorkspaceHistoryError,
+    WorkspaceHistoryConfigurationError,
     WorkspaceMutationError,
     WorkspacePathError,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "WorkspaceConflictError",
     "WorkspaceError",
     "WorkspaceHistoryError",
+    "WorkspaceHistoryConfigurationError",
     "WorkspaceMutationError",
     "WorkspacePathError",
 ]

@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-"""带快照、Diff 和安全回滚的工作区文件修改服务。"""
+"""带私有 Git Commit、Diff、补丁和安全回滚的工作区修改服务。"""
 
 from __future__ import annotations
 
-import difflib
 import hashlib
 import os
 import stat
@@ -12,44 +11,55 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from qharness.exception import (
-    WorkspaceConflictError,
-    WorkspaceMutationError,
-)
+from qharness.exception import WorkspaceConflictError, WorkspaceMutationError
 from qharness.workspace.context import WorkspaceContext
 from qharness.workspace.history import WorkspaceHistoryRepository
 from qharness.workspace.models import ChangeStatus, FileChange, FileMutationResult
-from qharness.workspace.version import FileVersionStore
+from qharness.workspace.patch import parse_patch
+from qharness.workspace.version import (
+    FileHistoryEntry,
+    FileVersionStore,
+    WorkspaceStatus,
+)
 
 
-_CTX_DIFF_LINES = 3
 _LOCKS_GUARD = threading.Lock()
 _MUTATION_LOCKS: dict[str, threading.RLock] = {}
 
 
 @dataclass(frozen=True, slots=True)
 class _FileSnapshot:
-    """文件某个时刻的原始内容及校验信息。"""
+    """文件某个时刻的原始内容和本地权限。"""
 
     # 文件在该时刻是否存在。
     exists: bool
 
-    # 文件的原始字节；不存在时为 None。
+    # 文件原始字节；不存在时为 None。
     content: bytes | None
 
-    # Dulwich 私有对象库中的 Git Blob 编号。
-    revision: str | None
-
-    # 用于冲突检查和内容完整性校验的 SHA-256。
+    # 用于乐观冲突检查的 SHA-256。
     sha256: str | None
+
+    # 普通权限位；Windows 上通常为 0o666，创建文件默认使用 0o644。
+    mode: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PlannedFileChange:
+    """一次逻辑操作内单个文件的落盘计划。"""
+
+    path: str
+    file_path: Path
+    before: _FileSnapshot
+    after: _FileSnapshot
 
 
 class WorkspaceMutationService:
-    """所有内置写文件工具共享的安全变更入口。
+    """所有内置写文件工具共享的生产级修改入口。
 
-    本服务保证写入采用同目录临时文件加原子替换；每次修改先持久化修改前后
-    Blob，再建立 pending 记录，最后更新状态。回滚使用 SHA-256 乐观校验，
-    不会覆盖操作完成后由用户或其他 Run 产生的新修改。
+    服务会先把用户在工具之外产生的修改保存成外部检查点，再执行写入。每次
+    逻辑操作只产生一个数据库 operation 和一个 Dulwich Commit；多文件写入
+    中途失败时会补偿恢复已经落盘的文件。
     """
 
     def __init__(
@@ -61,7 +71,7 @@ class WorkspaceMutationService:
         run_id: str,
         max_file_bytes: int = 2 * 1024 * 1024,
     ) -> None:
-        """绑定当前 Run、工作区和私有历史存储。"""
+        """绑定当前 Run、工作区、操作台账和私有 Git 仓库。"""
 
         if isinstance(max_file_bytes, bool) or not isinstance(max_file_bytes, int):
             raise ValueError("max_file_bytes 必须是整数。")
@@ -69,32 +79,16 @@ class WorkspaceMutationService:
             raise ValueError("max_file_bytes 必须大于 0。")
         if not isinstance(run_id, str) or not run_id.strip():
             raise ValueError("run_id 必须是非空字符串。")
-        for local_root in (
-            history_repository.local_root,
-            version_store.local_root,
-        ):
+        for local_root in (history_repository.local_root, version_store.local_root):
             if local_root is not None and local_root.is_relative_to(workspace.root):
-                raise ValueError(
-                    "私有历史目录不能放在 Agent 可访问的工作区内部。"
-                )
+                raise ValueError("私有历史目录不能放在 Agent 可访问的工作区内部。")
 
-        # 当前 Run 唯一可触达的工作区路径边界。
         self.workspace = workspace
-
-        # 保存操作状态、租户关联和事务语义的数据库仓储。
         self.history_repository = history_repository
-
-        # 保存修改前后文件原始字节的可替换版本存储。
         self.version_store = version_store
-
-        # 所有新操作关联到的 Agent Run 标识。
         self.run_id = run_id
-
-        # 单文件读取、写入和历史快照允许的最大字节数。
         self.max_file_bytes = max_file_bytes
         self.history_repository.bind_workspace_root(self.workspace.root)
-
-        # 修改锁属于业务服务，不依赖 SQLite 或 Dulwich 具体实现。
         self._mutation_lock = _workspace_mutation_lock(self.workspace.root)
 
     def write_text(
@@ -105,7 +99,7 @@ class WorkspaceMutationService:
         overwrite: bool = False,
         expected_sha256: str | None = None,
     ) -> FileMutationResult:
-        """创建或完整覆盖一个 UTF-8 文件，并返回可回滚变更回执。"""
+        """创建或完整覆盖一个 UTF-8 文件，并生成独立 Commit。"""
 
         if not isinstance(content, str):
             raise WorkspaceMutationError("content 必须是字符串。")
@@ -113,24 +107,23 @@ class WorkspaceMutationService:
         self._validate_content_size(encoded_content)
 
         with self._mutation_lock:
+            base_commit_id = self._checkpoint_external_changes()
             file_path, relative_path = self._resolve_writable_file(path)
+            self._validate_trackable_path(relative_path)
             before = self._capture_snapshot(file_path)
             if before.exists and not overwrite:
                 raise WorkspaceMutationError(
                     f"文件已经存在，如需覆盖请显式设置 overwrite=true：{relative_path}"
                 )
-            self._validate_expected_hash(
-                relative_path,
-                before.sha256,
-                expected_sha256,
+            self._validate_expected_hash(relative_path, before.sha256, expected_sha256)
+            after = self._snapshot_content(
+                encoded_content,
+                mode=before.mode if before.exists else None,
             )
-            after = self._snapshot_content(encoded_content)
-            return self._apply_change(
+            return self._apply_plans(
                 tool_name="write_file",
-                file_path=file_path,
-                relative_path=relative_path,
-                before=before,
-                after=after,
+                plans=(_PlannedFileChange(relative_path, file_path, before, after),),
+                base_commit_id=base_commit_id,
             )
 
     def replace_text(
@@ -147,22 +140,19 @@ class WorkspaceMutationService:
         if not old_text:
             raise WorkspaceMutationError("old_text 不能为空。")
         if isinstance(expected_replacements, bool) or not isinstance(
-            expected_replacements,
-            int,
+            expected_replacements, int
         ):
             raise WorkspaceMutationError("expected_replacements 必须是整数。")
         if expected_replacements <= 0:
             raise WorkspaceMutationError("expected_replacements 必须大于 0。")
 
         with self._mutation_lock:
+            base_commit_id = self._checkpoint_external_changes()
             file_path = self.workspace.resolve_file(path)
             relative_path = self.workspace.relative_path(file_path)
+            self._validate_trackable_path(relative_path)
             before = self._capture_snapshot(file_path)
-            self._validate_expected_hash(
-                relative_path,
-                before.sha256,
-                expected_sha256,
-            )
+            self._validate_expected_hash(relative_path, before.sha256, expected_sha256)
             original_text = self._decode_utf8(before, relative_path)
             actual_replacements = original_text.count(old_text)
             if actual_replacements != expected_replacements:
@@ -174,140 +164,278 @@ class WorkspaceMutationService:
                     "若只想修改其中一处，请在 old_text 中加入更多相邻内容，"
                     "使它只匹配目标位置。"
                 )
-            encoded_content = original_text.replace(old_text, new_text).encode(
-                "utf-8"
-            )
+            encoded_content = original_text.replace(old_text, new_text).encode("utf-8")
             self._validate_content_size(encoded_content)
-            after = self._snapshot_content(encoded_content)
-            return self._apply_change(
+            after = self._snapshot_content(encoded_content, mode=before.mode)
+            return self._apply_plans(
                 tool_name="replace_text",
-                file_path=file_path,
-                relative_path=relative_path,
-                before=before,
-                after=after,
+                plans=(_PlannedFileChange(relative_path, file_path, before, after),),
+                base_commit_id=base_commit_id,
             )
 
-    def rollback(self, operation_id: str) -> FileMutationResult:
-        """恢复一次已应用操作，并拒绝覆盖操作之后出现的新文件内容。"""
+    def apply_patch(self, patch_text: str) -> FileMutationResult:
+        """一次性应用结构化多文件补丁，并生成一个原子业务操作。"""
+
+        patch_files = parse_patch(patch_text)
+        with self._mutation_lock:
+            base_commit_id = self._checkpoint_external_changes()
+            plans: list[_PlannedFileChange] = []
+            resolved_paths: set[str] = set()
+            for patch_file in patch_files:
+                file_path = self.workspace.resolve_path(
+                    patch_file.path,
+                    must_exist=False,
+                )
+                relative_path = self.workspace.relative_path(
+                    file_path,
+                    must_exist=False,
+                )
+                self._validate_trackable_path(relative_path)
+                if relative_path in resolved_paths:
+                    raise WorkspaceMutationError(
+                        f"补丁中的多个路径解析到了同一个文件：{relative_path}"
+                    )
+                resolved_paths.add(relative_path)
+                if patch_file.action.value == "add":
+                    self.workspace.resolve_directory(file_path.parent)
+                before = self._capture_snapshot(file_path)
+                original = (
+                    self._decode_utf8(before, relative_path) if before.exists else None
+                )
+                target = patch_file.apply(original)
+                if target is None:
+                    after = _FileSnapshot(False, None, None, None)
+                else:
+                    encoded = target.encode("utf-8")
+                    self._validate_content_size(encoded)
+                    after = self._snapshot_content(encoded, mode=before.mode)
+                plans.append(
+                    _PlannedFileChange(relative_path, file_path, before, after)
+                )
+            return self._apply_plans(
+                tool_name="apply_patch",
+                plans=tuple(plans),
+                base_commit_id=base_commit_id,
+            )
+
+    def inspect(self, operation_id: str) -> FileMutationResult:
+        """根据数据库 Commit 关联实时计算操作 Diff。"""
+
+        operation = self.history_repository.get_operation(operation_id)
+        files: tuple[FileChange, ...] = ()
+        error_message = operation.error_message
+        if operation.commit_id is not None:
+            files = self.version_store.diff_commits(
+                operation.base_commit_id,
+                operation.commit_id,
+                paths=operation.paths,
+            )
+        elif operation.origin == "legacy" and error_message is None:
+            error_message = (
+                "该操作来自旧版 Blob-only 历史，没有 Tree/Commit，"
+                "只能查看操作摘要，不能动态计算 Diff 或安全回滚。"
+            )
+        return FileMutationResult(
+            operation_id=operation.operation_id,
+            tool_name=operation.tool_name,
+            status=operation.status,
+            files=files,
+            base_commit_id=operation.base_commit_id,
+            commit_id=operation.commit_id,
+            origin=operation.origin,
+            reverted_by_operation_id=operation.reverted_by_operation_id,
+            error_message=error_message,
+        )
+
+    def file_history(self, path: str, *, limit: int = 20) -> tuple[FileHistoryEntry, ...]:
+        """直接从 Dulwich Commit 链读取指定文件的历史。"""
+
+        file_path = self.workspace.resolve_path(path, must_exist=False)
+        relative_path = self.workspace.relative_path(file_path, must_exist=False)
+        with self._mutation_lock:
+            return self.version_store.file_history(relative_path, limit=limit)
+
+    def workspace_status(self) -> WorkspaceStatus:
+        """读取当前磁盘相对于私有 HEAD 的未提交变化，不创建检查点。"""
 
         with self._mutation_lock:
+            return self.version_store.workspace_status(self.workspace.root)
+
+    def rollback(self, operation_id: str) -> FileMutationResult:
+        """反向应用某次 Commit 的文件变化，保留之后的无关修改。"""
+
+        with self._mutation_lock:
+            current_head = self._checkpoint_external_changes()
             operation = self.history_repository.get_operation(operation_id)
             if operation.status is not ChangeStatus.APPLIED:
                 raise WorkspaceMutationError(
                     f"只有 applied 状态可以回滚；操作 {operation_id} 当前为 "
                     f"{operation.status.value}。"
                 )
-            if len(operation.files) != 1:
-                raise WorkspaceMutationError(
-                    "当前回滚实现只支持单文件操作；多文件原子回滚将在 "
-                    "apply_patch 阶段接入。"
+            if operation.commit_id is None:
+                raise WorkspaceMutationError("历史操作缺少 Commit，无法执行安全回滚。")
+
+            original_changes = self.version_store.diff_commits(
+                operation.base_commit_id,
+                operation.commit_id,
+                paths=operation.paths,
+            )
+            plans: list[_PlannedFileChange] = []
+            for change in original_changes:
+                file_path = self.workspace.resolve_path(change.path, must_exist=False)
+                self._validate_trackable_path(change.path)
+                current = self._capture_snapshot(file_path)
+                if (
+                    current.exists != change.after_exists
+                    or current.sha256 != change.after_sha256
+                ):
+                    raise WorkspaceConflictError(
+                        f"文件 {change.path} 在操作完成后又发生了变化，"
+                        "为避免覆盖用户或其他 Run 的修改，已拒绝回滚。"
+                    )
+                restored_state = (
+                    None
+                    if operation.base_commit_id is None
+                    else self.version_store.read_file_state(
+                        operation.base_commit_id,
+                        change.path,
+                    )
                 )
+                if restored_state is None:
+                    restored = _FileSnapshot(False, None, None, None)
+                else:
+                    restored_content, restored_mode = restored_state
+                    restored = self._snapshot_content(
+                        restored_content,
+                        mode=restored_mode,
+                    )
+                plans.append(_PlannedFileChange(change.path, file_path, current, restored))
 
-            original_change = operation.files[0]
-            file_path = self.workspace.resolve_path(
-                original_change.path,
-                must_exist=False,
-            )
-            current = self._capture_snapshot(file_path)
-            if (
-                current.exists != original_change.after_exists
-                or current.sha256 != original_change.after_sha256
-            ):
-                raise WorkspaceConflictError(
-                    f"文件 {original_change.path} 在操作完成后又发生了变化，"
-                    "为避免覆盖用户或其他 Run 的修改，已拒绝回滚。"
-                )
-
-            restored = self._snapshot_from_history(
-                exists=original_change.before_exists,
-                revision=original_change.before_revision,
-                sha256=original_change.before_sha256,
-            )
-            rollback_change = self._build_file_change(
-                original_change.path,
-                current,
-                restored,
-            )
-            rollback_operation_id = self.history_repository.begin_operation(
-                run_id=self.run_id,
+            return self._apply_plans(
                 tool_name="rollback_file_change",
-                files=(rollback_change,),
-            )
-            try:
-                self._write_snapshot(file_path, restored, previous=current)
-            except Exception as error:
-                self._record_failure(rollback_operation_id, error)
-                raise
-            # 文件已经恢复后若 SQLite 暂时不可写，保留 pending 供恢复流程
-            # 对照前后摘要确认，不能错误标记为 failed。
-            self.history_repository.complete_rollback(
-                rollback_operation_id,
-                operation_id,
+                plans=tuple(plans),
+                base_commit_id=current_head,
+                origin="rollback",
+                original_operation_id=operation_id,
             )
 
-            return FileMutationResult(
-                operation_id=rollback_operation_id,
-                tool_name="rollback_file_change",
-                status=ChangeStatus.APPLIED,
-                files=(rollback_change,),
-            )
+    def _checkpoint_external_changes(self) -> str:
+        """确保磁盘状态有基线；外部变化单独生成 Commit 和操作台账。"""
 
-    def inspect(self, operation_id: str) -> FileMutationResult:
-        """读取某次变更的 Diff 和版本信息，不访问用户文件内容。"""
-
-        operation = self.history_repository.get_operation(operation_id)
-        return FileMutationResult(
-            operation_id=operation.operation_id,
-            tool_name=operation.tool_name,
-            status=operation.status,
-            files=operation.files,
-            reverted_by_operation_id=operation.reverted_by_operation_id,
-            error_message=operation.error_message,
+        result = self.version_store.checkpoint_workspace(
+            self.workspace.root,
+            message="QHarness workspace baseline or external checkpoint",
         )
+        if result.created and result.parent_commit_id is not None and result.files:
+            operation_id = self.history_repository.begin_operation(
+                run_id=self.run_id,
+                tool_name="external_checkpoint",
+                origin="external",
+                paths=tuple(change.path for change in result.files),
+                base_commit_id=result.parent_commit_id,
+            )
+            self.history_repository.complete_operation(operation_id, result.commit_id)
+        return result.commit_id
 
-    def _apply_change(
+    def _apply_plans(
         self,
         *,
         tool_name: str,
-        file_path: Path,
-        relative_path: str,
-        before: _FileSnapshot,
-        after: _FileSnapshot,
+        plans: tuple[_PlannedFileChange, ...],
+        base_commit_id: str,
+        origin: str = "agent",
+        original_operation_id: str | None = None,
     ) -> FileMutationResult:
-        """持久化版本、写入文件并确认操作状态。"""
+        """补偿式落盘全部文件，创建 Commit，最后确认数据库台账。"""
 
-        if before.exists == after.exists and before.sha256 == after.sha256:
+        changed = tuple(
+            plan
+            for plan in plans
+            if plan.before.exists != plan.after.exists
+            or plan.before.sha256 != plan.after.sha256
+        )
+        if not changed:
             return FileMutationResult(
                 operation_id=None,
                 tool_name=tool_name,
                 status=ChangeStatus.APPLIED,
                 files=(),
+                base_commit_id=base_commit_id,
+                commit_id=base_commit_id,
+                origin=origin,
             )
-
-        change = self._build_file_change(relative_path, before, after)
         operation_id = self.history_repository.begin_operation(
             run_id=self.run_id,
             tool_name=tool_name,
-            files=(change,),
+            origin=origin,
+            paths=tuple(plan.path for plan in changed),
+            base_commit_id=base_commit_id,
         )
+        written: list[_PlannedFileChange] = []
         try:
-            self._write_snapshot(file_path, after, previous=before)
+            for plan in changed:
+                self._write_snapshot(plan.file_path, plan.after)
+                written.append(plan)
+            commit_result = self.version_store.commit_changes(
+                base_commit_id,
+                {
+                    plan.path: (
+                        None
+                        if not plan.after.exists
+                        else (plan.after.content or b"", plan.after.mode or 0o644)
+                    )
+                    for plan in changed
+                },
+                message=f"QHarness {tool_name} operation={operation_id}",
+            )
         except Exception as error:
-            self._record_failure(operation_id, error)
+            restore_error = self._restore_written_files(written)
+            message = str(error)
+            if restore_error is not None:
+                message += f"；补偿恢复也失败：{restore_error}"
+            self._record_failure(operation_id, RuntimeError(message))
+            if restore_error is not None:
+                raise WorkspaceMutationError(message) from error
             raise
-        # 文件已经原子落盘后再确认数据库状态。确认失败时保持 pending，
-        # 后续可根据当前摘要判断写入究竟是否完成。
-        self.history_repository.complete_operation(operation_id)
 
+        if original_operation_id is None:
+            self.history_repository.complete_operation(
+                operation_id,
+                commit_result.commit_id,
+            )
+        else:
+            self.history_repository.complete_rollback(
+                operation_id,
+                original_operation_id,
+                commit_result.commit_id,
+            )
         return FileMutationResult(
             operation_id=operation_id,
             tool_name=tool_name,
             status=ChangeStatus.APPLIED,
-            files=(change,),
+            files=commit_result.files,
+            base_commit_id=base_commit_id,
+            commit_id=commit_result.commit_id,
+            origin=origin,
         )
 
+    def _restore_written_files(
+        self,
+        written: list[_PlannedFileChange],
+    ) -> Exception | None:
+        """逆序补偿已经落盘的文件，并返回首个恢复异常。"""
+
+        first_error: Exception | None = None
+        for plan in reversed(written):
+            try:
+                self._write_snapshot(plan.file_path, plan.before)
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        return first_error
+
     def _capture_snapshot(self, file_path: Path) -> _FileSnapshot:
-        """读取当前普通文件，并把原始字节保存到历史对象库。"""
+        """读取当前普通文件，并计算校验摘要。"""
 
         if not file_path.exists():
             return _FileSnapshot(False, None, None, None)
@@ -315,64 +443,29 @@ class WorkspaceMutationService:
             raise WorkspaceMutationError(f"目标路径不是普通文件：{file_path}")
         try:
             content = file_path.read_bytes()
+            mode = stat.S_IMODE(file_path.stat().st_mode)
         except OSError as error:
             raise WorkspaceMutationError(f"无法读取目标文件：{file_path}") from error
         self._validate_content_size(content)
-        return self._snapshot_content(content)
+        return self._snapshot_content(content, mode=mode)
 
-    def _snapshot_content(self, content: bytes) -> _FileSnapshot:
-        """为给定字节计算校验值并保存 Git Blob。"""
-
-        revision = self.version_store.save(content)
-        sha256 = hashlib.sha256(content).hexdigest()
-        return _FileSnapshot(True, content, revision, sha256)
-
-    def _snapshot_from_history(
+    def _snapshot_content(
         self,
+        content: bytes,
         *,
-        exists: bool,
-        revision: str | None,
-        sha256: str | None,
+        mode: int | None,
     ) -> _FileSnapshot:
-        """从私有对象仓库还原历史快照，并验证内容完整性。"""
+        """为给定字节计算校验值并补充默认权限。"""
 
-        if not exists:
-            return _FileSnapshot(False, None, None, None)
-        if revision is None or sha256 is None:
-            raise WorkspaceMutationError("历史记录缺少文件版本，无法回滚。")
-        content = self.version_store.load(revision)
-        actual_sha256 = hashlib.sha256(content).hexdigest()
-        if actual_sha256 != sha256:
-            raise WorkspaceMutationError("历史文件摘要校验失败，拒绝回滚。")
-        return _FileSnapshot(True, content, revision, sha256)
-
-    def _build_file_change(
-        self,
-        relative_path: str,
-        before: _FileSnapshot,
-        after: _FileSnapshot,
-    ) -> FileChange:
-        """构造持久化与模型审查共用的单文件变化对象。"""
-
-        before_text = self._decode_utf8(before, relative_path)
-        after_text = self._decode_utf8(after, relative_path)
-        return FileChange(
-            path=relative_path,
-            before_exists=before.exists,
-            after_exists=after.exists,
-            before_revision=before.revision,
-            after_revision=after.revision,
-            before_sha256=before.sha256,
-            after_sha256=after.sha256,
-            diff=_unified_diff(
-                relative_path,
-                before_text if before.exists else None,
-                after_text if after.exists else None,
-            ),
+        return _FileSnapshot(
+            True,
+            content,
+            hashlib.sha256(content).hexdigest(),
+            0o644 if mode is None else mode,
         )
 
     def _resolve_writable_file(self, path: str) -> tuple[Path, str]:
-        """解析待创建路径，并要求父目录已经存在且位于工作区。"""
+        """解析待创建路径，并要求父目录已存在且位于工作区。"""
 
         file_path = self.workspace.resolve_path(path, must_exist=False)
         self.workspace.resolve_directory(file_path.parent)
@@ -381,14 +474,18 @@ class WorkspaceMutationService:
         relative_path = self.workspace.relative_path(file_path, must_exist=False)
         return file_path, relative_path
 
-    def _write_snapshot(
-        self,
-        file_path: Path,
-        snapshot: _FileSnapshot,
-        *,
-        previous: _FileSnapshot,
-    ) -> None:
-        """使用原子替换写入快照，或在回滚创建操作时安全删除文件。"""
+    @staticmethod
+    def _validate_trackable_path(path: str) -> None:
+        """拒绝修改不会进入私有历史的保留元数据目录。"""
+
+        first_part = path.replace("\\", "/").split("/", 1)[0].casefold()
+        if first_part in {".git", ".qharness"}:
+            raise WorkspaceMutationError(
+                f"QHarness 保留目录不能通过文件工具修改：{path}"
+            )
+
+    def _write_snapshot(self, file_path: Path, snapshot: _FileSnapshot) -> None:
+        """使用同目录临时文件原子替换，或安全删除目标文件。"""
 
         if not snapshot.exists:
             try:
@@ -398,7 +495,6 @@ class WorkspaceMutationService:
             except OSError as error:
                 raise WorkspaceMutationError(f"无法删除文件：{file_path}") from error
             return
-
         if snapshot.content is None:
             raise WorkspaceMutationError("待写入快照缺少文件内容。")
 
@@ -414,10 +510,7 @@ class WorkspaceMutationService:
                 temporary_file.write(snapshot.content)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
-
-            if previous.exists:
-                current_mode = stat.S_IMODE(file_path.stat().st_mode)
-                os.chmod(temporary_path, current_mode)
+            os.chmod(temporary_path, snapshot.mode or 0o644)
             os.replace(temporary_path, file_path)
             temporary_path = None
         except OSError as error:
@@ -430,7 +523,7 @@ class WorkspaceMutationService:
                     pass
 
     def _validate_content_size(self, content: bytes) -> None:
-        """限制单文件历史和写入大小，避免异常参数耗尽内存或磁盘。"""
+        """限制单文件修改大小，避免异常参数耗尽内存或磁盘。"""
 
         if len(content) > self.max_file_bytes:
             raise WorkspaceMutationError(
@@ -443,7 +536,7 @@ class WorkspaceMutationService:
         actual_sha256: str | None,
         expected_sha256: str | None,
     ) -> None:
-        """使用可选摘要阻止模型基于过期文件内容继续修改。"""
+        """使用可选摘要阻止模型基于过期文件继续修改。"""
 
         if expected_sha256 is not None and expected_sha256 != actual_sha256:
             raise WorkspaceConflictError(
@@ -462,8 +555,6 @@ class WorkspaceMutationService:
         if b"\x00" in snapshot.content[:8192]:
             raise WorkspaceMutationError(f"拒绝修改疑似二进制文件：{path}")
         try:
-            # 使用 utf-8 而不是 utf-8-sig，使已有 BOM 也作为原始内容保留，
-            # 避免一次普通文本替换顺带改变文件编码形式。
             return snapshot.content.decode("utf-8")
         except UnicodeDecodeError as error:
             raise WorkspaceMutationError(
@@ -476,30 +567,7 @@ class WorkspaceMutationService:
         try:
             self.history_repository.fail_operation(operation_id, str(error))
         except Exception:
-            # 历史存储本身可能正是失败来源，不能用二次异常覆盖根因。
             pass
-
-
-def _unified_diff(path: str, before: str | None, after: str | None) -> str:
-    """生成适合模型审查的标准 unified diff。"""
-
-    before_lines = [] if before is None else before.splitlines(keepends=True)
-    after_lines = [] if after is None else after.splitlines(keepends=True)
-    from_file = "/dev/null" if before is None else f"a/{path}"
-    to_file = "/dev/null" if after is None else f"b/{path}"
-    diff_lines = difflib.unified_diff(
-        before_lines,
-        after_lines,
-        fromfile=from_file,
-        tofile=to_file,
-        n=_CTX_DIFF_LINES,
-    )
-    # difflib 会让“文件末尾没有换行”的数据行也不带换行，直接 join 会把
-    # 相邻的删除行和新增行粘在一起。Diff 仅供审查，补换行不影响 Blob 恢复。
-    return "".join(
-        line if line.endswith(("\n", "\r")) else f"{line}\n"
-        for line in diff_lines
-    )
 
 
 def _workspace_mutation_lock(workspace_root: Path) -> threading.RLock:
