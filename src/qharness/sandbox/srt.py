@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import platform
-import shutil
 import signal
 import subprocess
 import time
@@ -21,18 +20,25 @@ from pathlib import Path
 from typing import Any
 
 from qharness.exception import (
+    RuntimeManagerError,
     SandboxConfigurationError,
     SandboxExecutionError,
+    SandboxInstallationError,
     SandboxUnavailableError,
 )
+from qharness.runtime import RuntimeManager, RuntimeName
 from qharness.sandbox.base import (
     SandboxBackend,
     SandboxExecutionRequest,
     SandboxExecutionResult,
+    SandboxSetupResult,
     SandboxStatus,
 )
 from qharness.sandbox.config import SandboxConfig
-from qharness.sandbox.executables import resolve_sandbox_executable
+from qharness.sandbox.srt_package import SrtPackageManager
+from qharness.sandbox.windows_elevation import (
+    run_srt_install_with_confirmation,
+)
 from qharness.workspace import WorkspaceContext
 
 
@@ -54,11 +60,20 @@ class SrtSandboxBackend(SandboxBackend):
         self,
         config: SandboxConfig,
         workspace: WorkspaceContext,
+        runtime_manager: RuntimeManager | None = None,
     ) -> None:
-        """保存动态配置和当前 Agent Run 的工作区。"""
+        """保存动态配置、当前 Agent Run 工作区和托管运行时管理器。"""
 
         self._config = config
         self._workspace = workspace
+        # 保留直接构造 Backend 的便利性；工厂路径会显式注入同一实例。
+        self._runtime_manager = runtime_manager or RuntimeManager(
+            config.runtime_directory.parent
+        )
+        self._srt_package_manager = SrtPackageManager(
+            self._runtime_manager.runtime_root,
+            version=config.srt.expected_version,
+        )
 
     async def check_status(self) -> SandboxStatus:
         """只读检查 npm 包身份、Node 版本和 Windows 初始化状态。"""
@@ -85,6 +100,102 @@ class SrtSandboxBackend(SandboxBackend):
                 message=str(error),
             )
 
+    async def prepare(self) -> SandboxStatus:
+        """自动准备托管 Node 和 SRT npm 包，并返回最新只读状态。"""
+
+        try:
+            if self._config.srt.node_path is None:
+                node_path = await asyncio.to_thread(
+                    self._runtime_manager.ensure,
+                    RuntimeName.NODE,
+                )
+            else:
+                node_path = self._resolve_node_path()
+            if self._config.srt.package_path is None:
+                await asyncio.to_thread(
+                    self._srt_package_manager.ensure,
+                    node_path,
+                )
+        except (
+            RuntimeManagerError,
+            SandboxConfigurationError,
+            SandboxInstallationError,
+        ) as error:
+            return SandboxStatus(
+                backend="srt",
+                available=False,
+                message=f"无法准备 SRT 本地依赖：{error}",
+            )
+        return await self.check_status()
+
+    async def setup(self, *, force: bool = False) -> SandboxSetupResult:
+        """在用户确认后通过 Windows UAC 初始化或修复 SRT 系统组件。
+
+        下载 Node 和 npm 包不需要管理员权限，会先自动完成。真正改变系统
+        账户与权限的 ``srt-win install`` 只能在本方法中由用户点击确认后运行。
+        ``force=True`` 用于状态检查通过但实际执行暴露本地状态损坏时进行修复。
+        """
+
+        prepared = await self.prepare()
+        if os.name != "nt":
+            return SandboxSetupResult(
+                completed=prepared.available,
+                cancelled=False,
+                message=(
+                    prepared.message
+                    if prepared.available
+                    else "当前系统不支持 Windows SRT 初始化窗口。"
+                ),
+                status=prepared,
+            )
+        if not prepared.available and not prepared.setup_required:
+            return SandboxSetupResult(
+                completed=False,
+                cancelled=False,
+                message=prepared.message,
+                status=prepared,
+            )
+        if prepared.available and not force:
+            return SandboxSetupResult(
+                completed=True,
+                cancelled=False,
+                message="SRT 已通过预检，无需重复初始化。",
+                status=prepared,
+            )
+
+        _LOGGER.info("等待用户确认 SRT Windows 系统初始化。")
+        elevated = await asyncio.to_thread(
+            run_srt_install_with_confirmation,
+            self._windows_helper_path(),
+        )
+        if elevated.cancelled or elevated.exit_code != 0:
+            log_method = _LOGGER.info if elevated.cancelled else _LOGGER.error
+            log_method("SRT Windows 系统初始化未完成：%s", elevated.message)
+            return SandboxSetupResult(
+                completed=False,
+                cancelled=elevated.cancelled,
+                message=elevated.message,
+                exit_code=elevated.exit_code,
+                status=prepared,
+            )
+
+        status = await self.check_status()
+        completed = status.available
+        message = (
+            "SRT Windows 系统初始化完成，并已通过预检。"
+            if completed
+            else f"初始化程序已退出，但 SRT 预检仍未通过：{status.message}"
+        )
+        log_method = _LOGGER.info if completed else _LOGGER.error
+        log_method(message)
+        return SandboxSetupResult(
+            completed=completed,
+            cancelled=False,
+            message=message,
+            exit_code=elevated.exit_code,
+            status=status,
+        )
+
     async def execute(
         self,
         request: SandboxExecutionRequest,
@@ -105,7 +216,7 @@ class SrtSandboxBackend(SandboxBackend):
 
         # 第一步：执行只读预检。沙箱不可用时明确失败，绝不绕过 SRT
         # 直接在宿主机运行目标命令。
-        status = await self.check_status()
+        status = await self.prepare()
         if not status.available:
             _LOGGER.error("SRT 预检失败：%s", status.message)
             raise SandboxUnavailableError(
@@ -117,11 +228,15 @@ class SrtSandboxBackend(SandboxBackend):
         # QHarness 自带运行时。首次使用时的摘要校验和解压放到工作线程执行，
         # 避免阻塞 asyncio 事件循环。
         cwd = self._workspace.resolve_directory(request.cwd)
-        executable = await asyncio.to_thread(
-            resolve_sandbox_executable,
-            request.executable,
-            self._config.runtime_directory.parent / "python",
-        )
+        try:
+            executable = await asyncio.to_thread(
+                self._resolve_target_executable,
+                request.executable,
+            )
+        except RuntimeManagerError as error:
+            raise SandboxConfigurationError(
+                f"无法准备沙箱目标运行时：{error}"
+            ) from error
         settings_path = self._write_settings_file()
         node_path = self._resolve_node_path()
         _LOGGER.debug(
@@ -136,7 +251,7 @@ class SrtSandboxBackend(SandboxBackend):
         # 当作文件名的一部分，因此改用 SRT 的原始命令字符串模式。
         command = [
             str(node_path),
-            str(self._config.srt.cli_path),
+            str(self._resolve_package_path() / "dist" / "cli.js"),
             "--settings",
             str(settings_path),
         ]
@@ -304,6 +419,9 @@ class SrtSandboxBackend(SandboxBackend):
         # 再把执行归因字段原样带回调用方。
         stdout, stdout_truncated = await stdout_task
         stderr, stderr_truncated = await stderr_task
+        # SRT debug 会把完整目标命令（可能包含密钥）写入 stderr。实时日志和
+        # 返回结果都执行相同脱敏，避免上层把原文再次落盘。
+        stderr = _redact_srt_debug_commands(stderr)
         await asyncio.gather(stdin_task, return_exceptions=True)
         result = SandboxExecutionResult(
             exit_code=process.returncode,
@@ -335,9 +453,9 @@ class SrtSandboxBackend(SandboxBackend):
     def _read_package_version(self) -> str:
         """读取 package.json，避免误调用 PATH 中碰巧同名的程序。"""
 
-        package_path = self._config.srt.package_path
+        package_path = self._resolve_package_path()
         metadata_path = package_path / "package.json"
-        cli_path = self._config.srt.cli_path
+        cli_path = package_path / "dist" / "cli.js"
         if not metadata_path.is_file() or not cli_path.is_file():
             raise SandboxConfigurationError(
                 f"SRT npm 包不完整：{package_path}"
@@ -357,14 +475,28 @@ class SrtSandboxBackend(SandboxBackend):
         if not isinstance(version, str) or not version:
             raise SandboxConfigurationError("SRT package.json 缺少有效版本号。")
         expected = self._config.srt.expected_version
-        if expected is not None and version != expected:
+        if version != expected:
             raise SandboxConfigurationError(
                 f"SRT 版本不匹配：期望 {expected}，实际 {version}。"
             )
         return version
 
+    def _resolve_package_path(self) -> Path:
+        """优先使用用户配置路径，否则返回已验证的托管 SRT 路径。"""
+
+        configured = self._config.srt.package_path
+        if configured is not None:
+            return configured
+        status = self._srt_package_manager.check_status()
+        if not status.available:
+            raise SandboxConfigurationError(
+                "QHarness 托管 SRT 尚未准备完成，请先调用 sandbox.prepare()："
+                f"{status.message}"
+            )
+        return status.package_path
+
     def _resolve_node_path(self) -> Path:
-        """优先使用配置路径；未配置时只自动发现 Node，不发现 srt。"""
+        """优先使用用户配置路径，否则使用已准备好的 QHarness 托管 Node。"""
 
         configured = self._config.srt.node_path
         if configured is not None:
@@ -373,12 +505,22 @@ class SrtSandboxBackend(SandboxBackend):
                     f"Node.js 可执行文件不存在：{configured}"
                 )
             return configured
-        discovered = shutil.which("node")
-        if discovered is None:
+        status = self._runtime_manager.check_status(RuntimeName.NODE)
+        if not status.available or status.executable_path is None:
             raise SandboxConfigurationError(
-                "未找到 Node.js；请在 sandbox.srt.node_path 中配置绝对路径。"
+                "QHarness 托管 Node 尚未准备完成，请先调用 sandbox.prepare()："
+                f"{status.message}"
             )
-        return Path(discovered).resolve()
+        return status.executable_path
+
+    def _resolve_target_executable(self, executable: str) -> str:
+        """解析沙箱目标程序，并让用户明确选择的 Node 同时作用于 JS。"""
+
+        is_bare_name = "/" not in executable and "\\" not in executable
+        is_node = executable.casefold() in {"node", "node.exe"}
+        if is_bare_name and is_node and self._config.srt.node_path is not None:
+            return str(self._resolve_node_path())
+        return self._runtime_manager.resolve_executable(executable)
 
     async def _check_node_version(self, node_path: Path) -> None:
         """确认 Node.js 满足 SRT npm 包声明的最低版本。"""
@@ -441,6 +583,7 @@ class SrtSandboxBackend(SandboxBackend):
                 available=False,
                 version=version,
                 message=f"无法执行 srt-win 状态检查：{error}",
+                setup_required=True,
                 setup_command=setup_command,
             )
         try:
@@ -465,6 +608,7 @@ class SrtSandboxBackend(SandboxBackend):
                 available=False,
                 version=version,
                 message=f"srt-win 状态检查失败：{detail or process.returncode}",
+                setup_required=True,
                 setup_command=setup_command,
             )
         try:
@@ -489,7 +633,7 @@ class SrtSandboxBackend(SandboxBackend):
                 setup_command=setup_command,
                 message=(
                     "Anthropic SRT 已安装到项目，但 Windows 隔离账户尚未初始化。"
-                    "请由用户明确执行一次 setup_command 并确认 UAC。"
+                    "请调用 sandbox.setup()，并由用户在窗口中确认 UAC。"
                 ),
             )
         return SandboxStatus(
@@ -506,7 +650,7 @@ class SrtSandboxBackend(SandboxBackend):
         machine = platform.machine().lower()
         architecture = "arm64" if machine in {"arm64", "aarch64"} else "x64"
         helper = (
-            self._config.srt.package_path
+            self._resolve_package_path()
             / "vendor"
             / "srt-win"
             / architecture
@@ -739,6 +883,24 @@ def _log_srt_debug_line(line: str) -> None:
         _LOGGER.debug("SRT | %s 命令内容已隐藏", _SRT_DEBUG_PREFIX)
         return
     _LOGGER.debug("SRT | %s", line)
+
+
+def _redact_srt_debug_commands(content: str) -> str:
+    """隐藏 SRT stderr 中携带完整目标命令的调试行。"""
+
+    lines: list[str] = []
+    for line in content.splitlines(keepends=True):
+        if any(marker in line for marker in _SENSITIVE_SRT_LOG_MARKERS):
+            if line.endswith("\r\n"):
+                suffix = "\r\n"
+            elif line.endswith("\n"):
+                suffix = "\n"
+            else:
+                suffix = ""
+            lines.append(f"{_SRT_DEBUG_PREFIX} 命令内容已隐藏{suffix}")
+        else:
+            lines.append(line)
+    return "".join(lines)
 
 
 async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:

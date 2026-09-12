@@ -22,6 +22,10 @@ from qharness.workspace import WorkspaceContext
 
 _LOGGER = logging.getLogger("qharness.examples.srt_sandbox")
 
+# 当 status 显示正常但实际执行提示 Windows 状态数据库损坏时，可临时改为
+# True。程序会再次显示确认窗口，并在用户同意后通过 UAC 执行修复安装。
+FORCE_SRT_REPAIR = False
+
 
 async def main() -> None:
     """预检 SRT，并用 QHarness 内置 Python 执行一段写死的代码。"""
@@ -38,21 +42,20 @@ async def main() -> None:
     workspace = WorkspaceContext(SANDBOX_WORKSPACE_ROOT)
     sandbox = create_sandbox_backend(config, workspace)
 
-    status = await sandbox.check_status()
+    # prepare 会自动下载并校验托管 Node 和固定版本 SRT，不需要用户手动 npm。
+    status = await sandbox.prepare()
     _LOGGER.info("后端：%s", status.backend)
     _LOGGER.info("版本：%s", status.version or "未知")
     _LOGGER.info("可用：%s", status.available)
     _LOGGER.info("说明：%s", status.message)
+    if status.setup_required or FORCE_SRT_REPAIR:
+        # 系统级初始化不会静默执行：QHarness 先显示说明窗口，用户点击“是”
+        # 后 Windows 才显示 UAC。取消不会使程序降级到宿主机直接执行。
+        setup = await sandbox.setup(force=FORCE_SRT_REPAIR)
+        _LOGGER.info("初始化结果：%s", setup.message)
+        status = setup.status or status
     if not status.available:
-        if status.setup_command:
-            # 这里只展示命令，不自动提权或修改 Windows 系统状态。
-            executable, *arguments = status.setup_command
-            quoted_arguments = " ".join(f'"{item}"' for item in arguments)
-            _LOGGER.warning(
-                '请人工执行一次：& "%s" %s',
-                executable,
-                quoted_arguments,
-            )
+        _LOGGER.error("沙箱尚不可用，已停止示例执行：%s", status.message)
         return
 
     request = SandboxExecutionRequest(

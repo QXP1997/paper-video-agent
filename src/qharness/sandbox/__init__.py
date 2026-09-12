@@ -5,6 +5,7 @@ from qharness.sandbox.base import (
     SandboxBackend,
     SandboxExecutionRequest,
     SandboxExecutionResult,
+    SandboxSetupResult,
     SandboxStatus,
 )
 from qharness.sandbox.config import (
@@ -22,6 +23,7 @@ __all__ = [
     "SandboxConfig",
     "SandboxExecutionRequest",
     "SandboxExecutionResult",
+    "SandboxSetupResult",
     "SandboxFilesystemConfig",
     "SandboxNetworkConfig",
     "SandboxStatus",

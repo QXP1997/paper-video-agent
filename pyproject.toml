@@ -35,4 +35,8 @@ qharness = [
     "resources/python/bundles/windows-x64/python-runtime.nupkg",
     "resources/python/bundles/windows-x64/runtime.json",
     "resources/python/bundles/windows-x64/SOURCE.txt",
+    "resources/node/bundles/windows-x64/runtime.json",
+    "resources/node/bundles/windows-x64/SOURCE.txt",
+    "resources/srt/package.json",
+    "resources/srt/package-lock.json",
 ]

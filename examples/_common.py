@@ -30,8 +30,10 @@ from qharness.model.config import load_model_config  # noqa: E402
 from qharness.exception.error import (  # noqa: E402
     ModelBackendError,
     ModelConfigurationError,
+    RuntimeManagerError,
     SandboxConfigurationError,
     SandboxExecutionError,
+    SandboxInstallationError,
     SandboxUnavailableError,
     ToolConfigurationError,
     ToolProviderError,
@@ -74,12 +76,16 @@ def run_example(main_function: Callable[[], Awaitable[None]]) -> None:
         asyncio.run(main_function())
     except ModelConfigurationError as error:
         _LOGGER.error("配置错误：%s", error)
+    except RuntimeManagerError as error:
+        _LOGGER.error("托管运行时错误：%s", error)
     except ToolConfigurationError as error:
         _LOGGER.error("工具配置错误：%s", error)
     except ToolProviderError as error:
         _LOGGER.error("工具提供器错误：%s", error)
     except SandboxConfigurationError as error:
         _LOGGER.error("沙箱配置错误：%s", error)
+    except SandboxInstallationError as error:
+        _LOGGER.error("沙箱依赖安装错误：%s", error)
     except SandboxUnavailableError as error:
         _LOGGER.error("沙箱不可用：%s", error)
         if error.setup_command:

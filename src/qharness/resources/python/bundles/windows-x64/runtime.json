@@ -1,6 +1,11 @@
 {
+  "name": "python",
   "version": "3.13.15",
+  "platform": "windows-x64",
   "archive": "python-runtime.nupkg",
+  "archive_format": "zip",
   "archive_root": "tools",
+  "executable": "python.exe",
+  "install_directory": "cpython-3.13.15-windows-x64",
   "sha256": "05357887df50d3153efc681bdf432c321d3e2f9ce5788f99f4515b27e8fda0ac"
 }

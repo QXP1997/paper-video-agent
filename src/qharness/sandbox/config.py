@@ -14,7 +14,6 @@ from qharness.utils.toml import (
     read_float,
     read_int,
     read_optional_string,
-    read_required_string,
     read_string,
     read_string_list,
     read_table,
@@ -42,24 +41,17 @@ _NETWORK_KEYS = {"allowed_domains", "denied_domains", "allow_local_binding"}
 class SrtRuntimeConfig:
     """定位并校验 Anthropic Sandbox Runtime npm 包。"""
 
-    # Node.js 可执行文件路径；None 表示启动时通过系统 PATH 自动查找 node。
+    # Node.js 自定义路径；None 表示使用 QHarness 自动下载的托管 Node。
     node_path: Path | None
 
-    # @anthropic-ai/sandbox-runtime npm 包根目录，其中必须包含 package.json。
-    package_path: Path
+    # SRT npm 包自定义路径；None 表示自动下载并使用托管 SRT。
+    package_path: Path | None
 
-    # 要求使用的精确 SRT 版本；None 表示不限制版本，不建议生产环境使用。
-    expected_version: str | None = None
+    # 要求使用的精确 SRT 版本，同时用于隔离不同版本的托管安装目录。
+    expected_version: str = "0.0.74"
 
     # 是否开启 SRT 自身的调试日志，排查策略或启动问题时使用。
     debug: bool = False
-
-    @property
-    def cli_path(self) -> Path:
-        """返回 npm 包声明的 CLI 默认位置。"""
-
-        return self.package_path / "dist" / "cli.js"
-
 
 @dataclass(frozen=True, slots=True)
 class SandboxFilesystemConfig:
@@ -150,7 +142,7 @@ def load_sandbox_config(config_path: str | Path) -> SandboxConfig:
         if backend != "srt":
             raise ValueError("sandbox.backend 当前只支持 srt。")
 
-        package_text = read_required_string(
+        package_text = read_optional_string(
             srt_raw,
             "package_path",
             "sandbox.srt",
@@ -161,6 +153,8 @@ def load_sandbox_config(config_path: str | Path) -> SandboxConfig:
             "expected_version",
             "sandbox.srt",
         )
+        if expected_version is None:
+            expected_version = "0.0.74"
         runtime_text = read_string(
             raw,
             "runtime_directory",
@@ -197,7 +191,11 @@ def load_sandbox_config(config_path: str | Path) -> SandboxConfig:
                     if node_text is not None
                     else None
                 ),
-                package_path=resolve_config_path(path, package_text),
+                package_path=(
+                    resolve_config_path(path, package_text)
+                    if package_text is not None
+                    else None
+                ),
                 expected_version=expected_version,
                 debug=read_bool(srt_raw, "debug", False, "sandbox.srt"),
             ),

@@ -10,9 +10,11 @@ max_stderr_chars = 100000
 runtime_directory = "../.qharness/runtime/sandbox"
 
 [sandbox.srt]
-# 未配置 node_path 时自动从系统 PATH 查找 node；也可以填写绝对路径。
+# 未配置 node_path 时自动下载并使用 QHarness 托管 Node；只有用户明确选择
+# 自定义 Node 时才填写路径，不可用时不会静默回退。
 # node_path = "C:/Program Files/nodejs/node.exe"
-package_path = "../.qharness/runtime/srt/node_modules/@anthropic-ai/sandbox-runtime"
+# 未配置 package_path 时按锁文件自动下载固定版本的 SRT。
+# package_path = "../custom/sandbox-runtime"
 # 固定版本可以避免 SRT 预览版升级后策略语义悄然变化。
 expected_version = "0.0.74"
 # 开启后会把 SRT 原生日志实时转发到 QHarness 的 DEBUG 日志；生产环境可关闭。

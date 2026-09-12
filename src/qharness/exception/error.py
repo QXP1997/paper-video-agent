@@ -69,12 +69,32 @@ class WorkspacePathError(WorkspaceError, ValueError):
     """目标路径越界、不存在或类型不符合要求。"""
 
 
+class RuntimeManagerError(QHarnessError):
+    """托管运行时发现、配置或安装失败时使用的异常基类。"""
+
+
+class RuntimeConfigurationError(RuntimeManagerError, ValueError):
+    """运行时清单、平台映射或路径配置不合法。"""
+
+
+class RuntimeUnavailableError(RuntimeManagerError, RuntimeError):
+    """当前平台尚未提供请求的托管运行时或资源归档。"""
+
+
+class RuntimeInstallationError(RuntimeManagerError, RuntimeError):
+    """运行时摘要校验、解压或原子安装失败。"""
+
+
 class SandboxError(QHarnessError):
     """沙箱配置、预检或执行失败时使用的异常基类。"""
 
 
 class SandboxConfigurationError(SandboxError, ValueError):
     """沙箱配置文件不完整或配置值不合法。"""
+
+
+class SandboxInstallationError(SandboxError, RuntimeError):
+    """下载或安装沙箱运行时依赖失败。"""
 
 
 class SandboxUnavailableError(SandboxError, RuntimeError):

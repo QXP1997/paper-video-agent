@@ -1,0 +1,13 @@
+{
+  "name": "node",
+  "version": "24.21.0",
+  "platform": "windows-x64",
+  "archive": "node-v24.21.0-win-x64.zip",
+  "archive_format": "zip",
+  "archive_root": "node-v24.21.0-win-x64",
+  "executable": "node.exe",
+  "install_directory": "node-v24.21.0-windows-x64",
+  "sha256": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541",
+  "download_url": "https://nodejs.org/download/release/v24.21.0/node-v24.21.0-win-x64.zip",
+  "archive_size_bytes": 37618919
+}

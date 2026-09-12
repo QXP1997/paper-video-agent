@@ -1,0 +1,9 @@
+{
+  "name": "qharness-managed-srt",
+  "private": true,
+  "version": "0.0.0",
+  "description": "QHarness 固定版本的 Anthropic Sandbox Runtime 安装清单",
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.74"
+  }
+}

@@ -143,8 +143,28 @@ class SandboxStatus:
     # 是否还需要用户执行一次系统级初始化，例如 Windows SRT 安装。
     setup_required: bool = False
 
-    # 建议用户人工执行的初始化 argv；仅展示，不由 QHarness 自动提权运行。
+    # 初始化程序的固定 argv，供诊断或客户端展示；实际提权统一走 setup()。
     setup_command: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxSetupResult:
+    """保存一次需要用户确认的系统级沙箱初始化结果。"""
+
+    # 初始化程序是否以零退出，且后续沙箱预检已经通过。
+    completed: bool
+
+    # 用户是否在确认窗口或 Windows UAC 窗口中取消了操作。
+    cancelled: bool
+
+    # 面向客户端和日志的结果说明。
+    message: str
+
+    # 系统初始化程序的退出码；未启动或无法取得时为 None。
+    exit_code: int | None = None
+
+    # 初始化完成后重新执行的只读状态检查结果。
+    status: SandboxStatus | None = None
 
 
 class SandboxBackend(ABC):
@@ -153,6 +173,25 @@ class SandboxBackend(ABC):
     @abstractmethod
     async def check_status(self) -> SandboxStatus:
         """以只读方式检查依赖、身份、版本和系统初始化状态。"""
+
+    async def prepare(self) -> SandboxStatus:
+        """准备不需要提权的沙箱依赖，并返回最新状态。
+
+        默认实现只执行只读检查；需要下载运行时的后端可以覆盖该方法。
+        """
+
+        return await self.check_status()
+
+    async def setup(self, *, force: bool = False) -> SandboxSetupResult:
+        """请求用户完成系统级初始化；不需要初始化的后端直接返回状态。"""
+
+        status = await self.prepare()
+        return SandboxSetupResult(
+            completed=status.available,
+            cancelled=False,
+            message=status.message,
+            status=status,
+        )
 
     @abstractmethod
     async def execute(

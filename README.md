@@ -54,6 +54,8 @@ model = "deepseek-v4-flash"
 .\.venv\Scripts\python.exe .\examples\06_workspace.py
 .\.venv\Scripts\python.exe .\examples\07_builtin_tools.py
 .\.venv\Scripts\python.exe .\examples\08_srt_sandbox.py
+.\.venv\Scripts\python.exe .\examples\09_runtime_manager.py
+.\.venv\Scripts\python.exe .\examples\10_node_sandbox.py
 ```
 
 示例用途：
@@ -66,20 +68,20 @@ model = "deepseek-v4-flash"
 6. 工作区初始化、安全路径解析与越界访问拦截。
 7. 通过 `BuiltinToolProvider` 动态加载并执行工作区只读工具。
 8. 检查 Anthropic SRT 状态，并在可用时执行一个受隔离的 Python 进程。
+9. 检查 RuntimeManager 状态，并验证托管 Python、Node 的安装和名称解析。
+10. 使用逻辑名称 `node` 在 SRT 沙箱中执行 JavaScript。
 
 ## Anthropic SRT 沙箱
 
 QHarness 使用统一的 `SandboxBackend` 接口执行脚本和 CLI，当前实现为 `SrtSandboxBackend`。文件读取和修改仍由 QHarness 自己的工作区工具完成；只有外部进程执行进入沙箱。请求使用 `executable + arguments` 的 argv 形式，不把模型生成的内容拼成宿主 Shell 字符串。
 
-项目随包携带独立的 CPython 运行时。Agent 在 `SandboxExecutionRequest` 中只需填写 `executable="python"`（也支持 `python.exe`、`python3` 和 `python3.exe`），沙箱后端会自动选择当前平台的内置解释器，不读取系统 PATH，也不依赖用户安装的 Anaconda。首次调用会校验资源包 SHA-256，并解压到 `.qharness/runtime/python`；同版本后续调用直接复用。显式填写带目录的解释器路径时不会被替换。
+项目随包携带独立的 CPython 运行时。Agent 在 `SandboxExecutionRequest` 中只需填写 `executable="python"`（也支持 `python.exe`、`python3` 和 `python3.exe`），通用 `RuntimeManager` 会自动选择当前平台的托管解释器，不读取系统 PATH，也不依赖用户安装的 Anaconda。首次调用会校验资源包 SHA-256，并原子解压到 `.qharness/runtime/python`；同版本后续调用直接复用。显式填写带目录的解释器路径时不会被替换。
 
-开发环境可以把官方 SRT npm 包安装到 QHarness 的本地运行目录：
+Node 使用同一个 `RuntimeManager` 管理。默认从清单固定的 Node.js 官方 HTTPS 地址下载 `24.21.0`，校验文件大小和 SHA-256 后原子安装到 `.qharness/runtime/node`；Agent 使用 `executable="node"` 即可。SRT 运行 Node 与沙箱内执行 Node 都默认使用该托管版本。只有用户在 `[sandbox.srt]` 中明确配置 `node_path` 时，这两处才共同改用用户指定的 Node；路径不可用或未附带 npm 时会明确失败，不会静默回退。
 
-```powershell
-npm install --prefix .\.qharness\runtime\srt --omit=dev --ignore-scripts --no-audit --no-fund --package-lock=false @anthropic-ai/sandbox-runtime@0.0.74
-```
+SRT npm 包也无需人工运行 npm。`sandbox.prepare()` 会通过托管 Node 附带的 npm，按照应用内置的 `package-lock.json` 下载并安装精确版本 `0.0.74` 到 `.qharness/runtime/srt/packages`。安装时禁用生命周期脚本，并验证包名、版本和 CLI 后再原子发布。用户明确配置 `package_path` 时则使用自定义包。
 
-Windows 版 SRT 还需要用户明确执行一次系统初始化，它会弹出 UAC，并创建专用的 `srt-sandbox` 本地账户和 WFP 网络规则。QHarness 不会自动执行这个提权操作；运行 `examples/08_srt_sandbox.py` 会检查状态并打印当前机器对应的准确初始化命令。该示例使用 `.qharness/workspaces` 作为开发期托管工作区，不会把整个 QHarness 源码仓库授权给沙箱进程。SRT 当前仍是 Anthropic 的 Research Preview，Windows 支持为 Alpha，因此版本在配置中固定为 `0.0.74`，升级时需要重新验证策略语义。
+Windows 版 SRT 还需要一次系统初始化，它会创建专用的 `srt-sandbox` 本地账户和 WFP 网络规则。`sandbox.check_status()` 始终只读；客户端发现 `setup_required=true` 后调用 `sandbox.setup()`，QHarness 会先显示原生说明窗口，用户点击“是”后再由 Windows 显示 UAC，并以提权方式运行固定的 `srt-win.exe install`，不再要求用户复制命令。运行 `examples/08_srt_sandbox.py` 可以直接验证完整流程。该示例使用 `.qharness/workspaces` 作为开发期托管工作区，不会把整个 QHarness 源码仓库授权给沙箱进程。SRT 当前仍是 Anthropic 的 Research Preview，Windows 支持为 Alpha，因此升级版本时需要重新验证策略语义。
 
 默认策略禁止网络访问，只允许写入当前托管工作区，并保护工作区内的 `.env` 和整个 `.git` 目录。SRT 的读取策略会继续沿用 Windows 原有 ACL，因此开发配置还会精确拒绝 QHarness 配置目录；不要通过拒绝整个 Windows 用户主目录来模拟读取白名单，SRT 0.0.74 在该路径上可能发生 ACL 超时。标准输出、标准错误、执行时间均有上限；超时、主动取消或输出超限时会终止整个进程树。`run_id` 和 `operation_id` 已保留在请求与结果中，后续可与文件变更日志和撤回功能关联。
 
@@ -110,6 +112,9 @@ src/qharness/tools/builtin/               工作区内置只读工具
 src/qharness/tools/providers/             动态工具提供器
 src/qharness/resources/ripgrep/           随客户端分发的 ripgrep 与许可证
 src/qharness/resources/python/            随客户端分发的独立 Python 归档与来源清单
+src/qharness/resources/node/              托管 Node 下载地址、版本和摘要清单
+src/qharness/resources/srt/               固定版本 SRT 的 npm 清单与锁文件
+src/qharness/runtime/                     托管运行时清单、校验、安全安装与名称解析
 src/qharness/workspace/                   工作区上下文和安全路径守卫
 src/qharness/sandbox/                     统一沙箱接口与 Anthropic SRT 后端
 src/qharness/backends/base.py             Backend 抽象接口
