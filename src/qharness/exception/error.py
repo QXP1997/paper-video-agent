@@ -69,6 +69,18 @@ class WorkspacePathError(WorkspaceError, ValueError):
     """目标路径越界、不存在或类型不符合要求。"""
 
 
+class WorkspaceMutationError(WorkspaceError, RuntimeError):
+    """工作区文件修改、历史记录或回滚操作失败。"""
+
+
+class WorkspaceConflictError(WorkspaceMutationError):
+    """文件状态已发生变化，为避免覆盖较新内容而拒绝修改。"""
+
+
+class WorkspaceHistoryError(WorkspaceMutationError):
+    """工作区私有历史仓库或 SQLite 索引不可用。"""
+
+
 class RuntimeManagerError(QHarnessError):
     """托管运行时发现、配置或安装失败时使用的异常基类。"""
 

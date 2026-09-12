@@ -18,6 +18,7 @@ from qharness.tools.executor import ToolExecutor
 from qharness.tools.hooks import ToolExecutionHook, ToolHookDecision
 from qharness.tools.providers import (
     BuiltinToolProvider,
+    FileMutationToolProvider,
     SandboxToolProvider,
     ToolProvider,
     load_tool_providers,
@@ -28,6 +29,7 @@ __all__ = [
     "Tool",
     "BuiltinToolProvider",
     "ExpiringCursorStore",
+    "FileMutationToolProvider",
     "ToolErrorCode",
     "ToolExecutionHook",
     "ToolExecutionPolicy",

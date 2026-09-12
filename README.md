@@ -57,6 +57,8 @@ model = "deepseek-v4-flash"
 .\.venv\Scripts\python.exe .\examples\09_runtime_manager.py
 .\.venv\Scripts\python.exe .\examples\10_node_sandbox.py
 .\.venv\Scripts\python.exe .\examples\11_run_process_tool.py
+.\.venv\Scripts\python.exe .\examples\12_file_mutation_history.py
+.\.venv\Scripts\python.exe .\examples\13_file_rollback_conflict.py
 ```
 
 示例用途：
@@ -72,6 +74,8 @@ model = "deepseek-v4-flash"
 9. 检查 RuntimeManager 状态，并验证托管 Python、Node 的安装和名称解析。
 10. 使用逻辑名称 `node` 在 SRT 沙箱中执行 JavaScript。
 11. 创建 RunContext，并通过受独立策略控制的 `run_process` 工具执行进程。
+12. 演示文件完整写入、精确替换、Diff、历史查询和安全回滚。
+13. 模拟用户后续编辑，验证回滚不会覆盖较新的文件内容。
 
 ## Anthropic SRT 沙箱
 
@@ -93,9 +97,13 @@ Windows 版 SRT 还需要一次系统初始化，它会创建专用的 `srt-sand
 
 `RunContext` 将 `tenant_id`、`workspace_id`、`run_id`、`WorkspaceContext`、`SandboxBackend`、工具调用计数和取消事件绑定到一次运行。它不是进程级单例；同一个 Harness 进程可以同时创建多个 RunContext。`workspace_root` 由完成租户授权的上层动态传入，不从租户标识拼接，也不写进全局配置。语言运行时可以跨 Run 复用，工作区、沙箱实例、工具注册表、ToolExecutor 和 ToolExecutionState 必须按 Run 隔离。
 
+传入 `history_root` 创建 RunContext 时，会同时创建 `WorkspaceMutationService`。业务服务只依赖 `WorkspaceHistoryRepository` 和 `FileVersionStore` 两个接口；本地默认实现分别是 `SqliteWorkspaceHistoryRepository` 与 `DulwichFileVersionStore`。未来多租户服务可以注入 PostgreSQL/MySQL 元数据仓库以及 S3/MinIO 版本存储，不需要修改文件写入、Diff 或回滚逻辑。私有历史目录必须位于 Agent 工作区之外，也不会修改用户项目自己的 `.git`。租户和工作区标识只用于计算固定长度目录摘要，逻辑工作区还会绑定规范化根路径，避免标识被复用到其他目录。
+
+`write_file`、`replace_text` 每次实际修改都会返回 unified diff、前后 Git Blob 编号、SHA-256 和 `operation_id`；`inspect_file_change` 可再次取得审查信息，`rollback_file_change` 用操作编号恢复原版本。回滚前必须确认当前文件仍等于原操作的修改后版本，如果用户或另一个 Run 已经产生更新，则返回稳定错误码 `conflict`，不会覆盖新内容。回滚本身也是一条新记录。当前版本支持单文件原子修改和回滚，多文件 `apply_patch` 将复用同一服务扩展。
+
 ## 工具提供器
 
-`ToolProvider` 表示一种工具来源，负责异步发现或创建工具；`load_tool_providers()` 将多个 Provider 返回的工具统一注册到 `ToolRegistry`。`BuiltinToolProvider` 根据工作区创建 `list_directory`、`read_file`，并在找到可用的 ripgrep 时增加 `search_text`；`SandboxToolProvider` 根据 RunContext 创建 `run_process`。`run_process` 只把结构化的 `executable + arguments` 转换成 `SandboxExecutionRequest`，不在 Handler 内保存调用次数、并发、审批或工具超时，这些全部由外层 ToolExecutor 按工具名称实施。未来本地插件、MCP 和 A2A 工具可以实现同一接口。
+`ToolProvider` 表示一种工具来源，负责异步发现或创建工具；`load_tool_providers()` 将多个 Provider 返回的工具统一注册到 `ToolRegistry`。`BuiltinToolProvider` 根据工作区创建 `list_directory`、`read_file`，并在找到可用的 ripgrep 时增加 `search_text`；`FileMutationToolProvider` 创建写入、替换、历史查询和回滚工具；`SandboxToolProvider` 根据 RunContext 创建 `run_process`。`run_process` 只把结构化的 `executable + arguments` 转换成 `SandboxExecutionRequest`，不在 Handler 内保存调用次数、并发、审批或工具超时，这些全部由外层 ToolExecutor 按工具名称实施。未来本地插件、MCP 和 A2A 工具可以实现同一接口。
 
 每个 Run 应创建自己的 ToolRegistry、ToolExecutor 和 ToolExecutionState。工具默认策略以及 `[tool_execution.tools.run_process]` 等具名覆盖仍来自统一配置，但实际计数和并发信号量不跨 Run 共享。`ripgrep` 的查找顺序是：调用方显式传入的路径、QHarness 内置资源、系统 `PATH`。当前项目先内置官方 ripgrep 15.2.0 Windows x64 版本，因此这个平台不需要用户单独安装；其他平台暂时回退到系统 `PATH`。
 
@@ -114,7 +122,7 @@ src/qharness/model/models.py              模型调用领域对象
 src/qharness/exception/error.py           统一异常定义
 src/qharness/utils/text.py                通用字符串工具
 src/qharness/tools/                       工具注册、Hook 与受控执行器
-src/qharness/tools/builtin/               工作区内置只读工具
+src/qharness/tools/builtin/               工作区内置读写与执行工具
 src/qharness/tools/providers/             动态工具提供器
 src/qharness/resources/ripgrep/           随客户端分发的 ripgrep 与许可证
 src/qharness/resources/python/            随客户端分发的独立 Python 归档与来源清单
@@ -122,7 +130,7 @@ src/qharness/resources/node/              托管 Node 下载地址、版本和�
 src/qharness/resources/srt/               固定版本 SRT 的 npm 清单与锁文件
 src/qharness/runtime/                     托管运行时清单、校验、安全安装与名称解析
 src/qharness/run/                         单次 Run 的租户、工作区、沙箱和取消上下文
-src/qharness/workspace/                   工作区上下文和安全路径守卫
+src/qharness/workspace/                   路径守卫、变更历史、Diff 与回滚服务
 src/qharness/sandbox/                     统一沙箱接口与 Anthropic SRT 后端
 src/qharness/backends/base.py             Backend 抽象接口
 src/qharness/backends/openai_compatible.py OpenAI-compatible 实现

@@ -31,6 +31,7 @@ class ToolErrorCode(StrEnum):
 
     UNKNOWN_TOOL = "unknown_tool"
     INVALID_ARGUMENTS = "invalid_arguments"
+    CONFLICT = "conflict"
     LIMIT_EXCEEDED = "limit_exceeded"
     REJECTED = "rejected"
     TIMEOUT = "timeout"

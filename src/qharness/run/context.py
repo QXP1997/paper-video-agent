@@ -10,7 +10,7 @@ from typing import Any
 
 from qharness.sandbox.base import SandboxBackend
 from qharness.tools.base import ToolExecutionRequest, ToolExecutionState
-from qharness.workspace.context import WorkspaceContext
+from qharness.workspace import WorkspaceContext, WorkspaceMutationService
 
 
 @dataclass(slots=True)
@@ -36,6 +36,9 @@ class RunContext:
     # 与本次工作区绑定的沙箱后端；外部进程只能通过该入口执行。
     sandbox: SandboxBackend
 
+    # 可选的统一文件变更服务；启用后写工具自动获得 Diff、历史与回滚能力。
+    mutation_service: WorkspaceMutationService | None = None
+
     # 本次 Run 独享的工具调用计数，不与其他租户或其他 Run 共用。
     tool_state: ToolExecutionState = field(default_factory=ToolExecutionState)
 
@@ -55,6 +58,13 @@ class RunContext:
             raise TypeError("workspace 必须是 WorkspaceContext。")
         if not isinstance(self.sandbox, SandboxBackend):
             raise TypeError("sandbox 必须实现 SandboxBackend。")
+        if self.mutation_service is not None:
+            if not isinstance(self.mutation_service, WorkspaceMutationService):
+                raise TypeError(
+                    "mutation_service 必须是 WorkspaceMutationService。"
+                )
+            if self.mutation_service.workspace.root != self.workspace.root:
+                raise ValueError("mutation_service 与 RunContext 工作区不一致。")
 
     @property
     def cancelled(self) -> bool:
