@@ -56,6 +56,7 @@ model = "deepseek-v4-flash"
 .\.venv\Scripts\python.exe .\examples\08_srt_sandbox.py
 .\.venv\Scripts\python.exe .\examples\09_runtime_manager.py
 .\.venv\Scripts\python.exe .\examples\10_node_sandbox.py
+.\.venv\Scripts\python.exe .\examples\11_run_process_tool.py
 ```
 
 示例用途：
@@ -70,6 +71,7 @@ model = "deepseek-v4-flash"
 8. 检查 Anthropic SRT 状态，并在可用时执行一个受隔离的 Python 进程。
 9. 检查 RuntimeManager 状态，并验证托管 Python、Node 的安装和名称解析。
 10. 使用逻辑名称 `node` 在 SRT 沙箱中执行 JavaScript。
+11. 创建 RunContext，并通过受独立策略控制的 `run_process` 工具执行进程。
 
 ## Anthropic SRT 沙箱
 
@@ -89,9 +91,13 @@ Windows 版 SRT 还需要一次系统初始化，它会创建专用的 `srt-sand
 
 `WorkspaceContext` 由客户端在每次 Agent Run 开始时根据用户选择的目录创建。所有文件工具都必须通过它解析路径，以阻止 `..`、绝对路径和符号链接逃出工作区。工作区边界不负责隔离 Shell 或外部代码；代码执行仍需单独经过 Sandbox 层。
 
+`RunContext` 将 `tenant_id`、`workspace_id`、`run_id`、`WorkspaceContext`、`SandboxBackend`、工具调用计数和取消事件绑定到一次运行。它不是进程级单例；同一个 Harness 进程可以同时创建多个 RunContext。`workspace_root` 由完成租户授权的上层动态传入，不从租户标识拼接，也不写进全局配置。语言运行时可以跨 Run 复用，工作区、沙箱实例、工具注册表、ToolExecutor 和 ToolExecutionState 必须按 Run 隔离。
+
 ## 工具提供器
 
-`ToolProvider` 表示一种工具来源，负责异步发现或创建工具；`load_tool_providers()` 将多个 Provider 返回的工具统一注册到 `ToolRegistry`。内置 Provider 根据工作区创建 `list_directory`、`read_file`，并在找到可用 `ripgrep` 时增加 `search_text`。`ripgrep` 的查找顺序是：调用方显式传入的路径、QHarness 内置资源、系统 `PATH`。当前项目先内置官方 ripgrep 15.2.0 Windows x64 版本，因此这个平台不需要用户单独安装；其他平台暂时回退到系统 `PATH`。未来本地插件、MCP 和 A2A 工具可以实现同一接口。
+`ToolProvider` 表示一种工具来源，负责异步发现或创建工具；`load_tool_providers()` 将多个 Provider 返回的工具统一注册到 `ToolRegistry`。`BuiltinToolProvider` 根据工作区创建 `list_directory`、`read_file`，并在找到可用的 ripgrep 时增加 `search_text`；`SandboxToolProvider` 根据 RunContext 创建 `run_process`。`run_process` 只把结构化的 `executable + arguments` 转换成 `SandboxExecutionRequest`，不在 Handler 内保存调用次数、并发、审批或工具超时，这些全部由外层 ToolExecutor 按工具名称实施。未来本地插件、MCP 和 A2A 工具可以实现同一接口。
+
+每个 Run 应创建自己的 ToolRegistry、ToolExecutor 和 ToolExecutionState。工具默认策略以及 `[tool_execution.tools.run_process]` 等具名覆盖仍来自统一配置，但实际计数和并发信号量不跨 Run 共享。`ripgrep` 的查找顺序是：调用方显式传入的路径、QHarness 内置资源、系统 `PATH`。当前项目先内置官方 ripgrep 15.2.0 Windows x64 版本，因此这个平台不需要用户单独安装；其他平台暂时回退到系统 `PATH`。
 
 `list_directory` 使用 `page_size` 和短随机 `cursor` 滚动分页。首次调用不传 `cursor`；返回 `has_more=true` 时，将 `next_cursor` 原样传入下一次调用。真实分页状态只保存在当前进程内存中，默认 30 分钟滑动过期、最多保存 1024 个；每次有效访问都会重新计算 30 分钟有效期。游标会绑定工作区、目录、递归开关、最大深度和隐藏文件开关，不能跨查询复用；游标过期、应用重启或目录变化导致锚点消失时，需要从第一页重新读取。客户端可以通过 `BuiltinToolProvider` 的 `list_directory_cursor_ttl_seconds` 和 `list_directory_max_cursors` 动态调整这两个值。
 
@@ -115,6 +121,7 @@ src/qharness/resources/python/            随客户端分发的独立 Python 归
 src/qharness/resources/node/              托管 Node 下载地址、版本和摘要清单
 src/qharness/resources/srt/               固定版本 SRT 的 npm 清单与锁文件
 src/qharness/runtime/                     托管运行时清单、校验、安全安装与名称解析
+src/qharness/run/                         单次 Run 的租户、工作区、沙箱和取消上下文
 src/qharness/workspace/                   工作区上下文和安全路径守卫
 src/qharness/sandbox/                     统一沙箱接口与 Anthropic SRT 后端
 src/qharness/backends/base.py             Backend 抽象接口

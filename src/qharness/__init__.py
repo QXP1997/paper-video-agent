@@ -55,6 +55,7 @@ from qharness.sandbox import (
     create_sandbox_backend,
     load_sandbox_config,
 )
+from qharness.run import RunContext, create_run_context
 
 __all__ = [
     "ChatMessage",
@@ -77,6 +78,7 @@ __all__ = [
     "RuntimeSpec",
     "RuntimeStatus",
     "RuntimeUnavailableError",
+    "RunContext",
     "SandboxConfigurationError",
     "SandboxError",
     "SandboxExecutionError",
@@ -103,6 +105,7 @@ __all__ = [
     "WorkspacePathGuard",
     "configure_logging",
     "create_sandbox_backend",
+    "create_run_context",
     "load_model_config",
     "load_sandbox_config",
 ]

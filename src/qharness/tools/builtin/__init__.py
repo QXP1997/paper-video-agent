@@ -13,12 +13,18 @@ from qharness.tools.builtin.search_text import (
     SearchTextParameters,
     create_search_text_tool,
 )
+from qharness.tools.builtin.run_process import (
+    RunProcessParameters,
+    create_run_process_tool,
+)
 
 __all__ = [
     "ListDirectoryParameters",
     "ReadFileParameters",
+    "RunProcessParameters",
     "SearchTextParameters",
     "create_list_directory_tool",
     "create_read_file_tool",
+    "create_run_process_tool",
     "create_search_text_tool",
 ]

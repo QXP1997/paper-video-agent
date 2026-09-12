@@ -10,7 +10,7 @@ import shutil
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO
+from typing import IO
 
 from qharness.exception import (
     RuntimeConfigurationError,
@@ -153,7 +153,7 @@ def _extract_runtime_archive(spec: RuntimeSpec, destination: Path) -> None:
                 _copy_archive_file(source, target)
 
 
-def _copy_archive_file(source: BinaryIO, target: Path) -> None:
+def _copy_archive_file(source: IO[bytes], target: Path) -> None:
     """将单个归档成员流式写入临时运行时目录。"""
 
     with target.open("wb") as output:

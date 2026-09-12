@@ -18,6 +18,7 @@ from qharness.tools.executor import ToolExecutor
 from qharness.tools.hooks import ToolExecutionHook, ToolHookDecision
 from qharness.tools.providers import (
     BuiltinToolProvider,
+    SandboxToolProvider,
     ToolProvider,
     load_tool_providers,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "ToolParameters",
     "ToolRegistry",
     "ToolRuntimePolicy",
+    "SandboxToolProvider",
     "load_tool_policy",
     "load_tool_providers",
 ]

@@ -30,9 +30,10 @@ max_calls = 2
 timeout_seconds = 5.0
 max_result_chars = 10000
 
-# 例如可以强制 Shell 工具审批，代码中声明的审批要求不能在这里关闭。
-[tool_execution.tools.shell]
-max_calls = 5
-timeout_seconds = 60.0
-max_concurrency = 1
-requires_approval = true
+# 沙箱进程工具的限制完全由执行策略提供，工具 Handler 内不保存这些数值。
+[tool_execution.tools.run_process]
+max_calls = 10
+timeout_seconds = 90.0
+max_concurrency = 2
+# 接入客户端审批 Hook 后可以改成 true；当前 main 示例保持可直接运行。
+requires_approval = false
