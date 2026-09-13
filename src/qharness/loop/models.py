@@ -182,6 +182,8 @@ class StageOutcome(StageIdentity):
     observation_refs: tuple[Text, ...] = ()
     reported_assumption_changes: tuple[Text, ...] = ()
     remaining_questions: tuple[Text, ...] = ()
+    matched_stop_when: tuple[Text, ...] = ()
+    matched_replan_when: tuple[Text, ...] = ()
 
 
 class EvidenceLink(ContractModel):

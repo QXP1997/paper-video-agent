@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import Field
 
-from qharness.tools.base import Tool, ToolParameters
+from qharness.tools.base import Tool, ToolParameters, ToolEffect
 from qharness.workspace import WorkspaceContext
 
 
@@ -160,6 +160,8 @@ def create_search_text_tool(
         ),
         parameters=SearchTextParameters,
         handler=search_text,
+        effect=ToolEffect.READ_ONLY,
+        parallel_safe=True,
     )
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from qharness.tools.base import Tool, ToolParameters, current_operation_id
+from qharness.tools.base import Tool, ToolParameters, ToolEffect, current_operation_id
 from qharness.workspace import WorkspaceMutationService
 
 
@@ -39,4 +39,5 @@ def create_apply_patch_tool(service: WorkspaceMutationService) -> Tool:
         ),
         parameters=ApplyPatchParameters,
         handler=apply_patch,
+        effect=ToolEffect.WORKSPACE_WRITE,
     )

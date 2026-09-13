@@ -110,9 +110,8 @@ class OpenAICompatibleBackend(ModelBackend):
         response_id: str | None = None
         response_model: str | None = None
 
-        yield ChatStreamEvent(type=ModelEventType.RESPONSE_STARTED)
-
         try:
+            yield ChatStreamEvent(type=ModelEventType.RESPONSE_STARTED)
             async for chunk in stream:
                 response_id = chunk.id or response_id
                 response_model = chunk.model or response_model
@@ -184,6 +183,8 @@ class OpenAICompatibleBackend(ModelBackend):
                     )
         except openai.OpenAIError as error:
             raise self._map_error(error) from error
+        finally:
+            await stream.close()
 
         tool_calls = [
             ToolCall(

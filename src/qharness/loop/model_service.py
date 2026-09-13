@@ -12,7 +12,7 @@ from qharness.loop.config import Role
 from qharness.loop.context import ContextCompiler
 from qharness.loop.models import Phase, StageOutcome, StagePlan, StageVerdict, TaskVerdict, TodoPlan
 from qharness.loop.repository import LoopRepository, response_from_dict
-from qharness.model.models import ChatMessage, ChatResponse, ToolDefinition
+from qharness.model.models import ChatMessage, ChatResponse, ToolDefinition, ModelEventType
 
 
 @dataclass(frozen=True)
@@ -35,12 +35,16 @@ class ModelService:
         observations: Sequence[str] = (), messages: Sequence[ChatMessage] = (),
         tools: Sequence[ToolDefinition] = (), task_check: bool = False,
         cancellation_event: asyncio.Event | None = None,
+        stream: bool = False,
+        expected_version: int | None = None,
     ) -> RoleResult:
         role = Role(role)
         snapshot = await asyncio.to_thread(self.repository.snapshot)
         if snapshot["policy"]["loop"] != self.compiler.config.model_dump(mode="json"):
             raise LoopConfigurationError("角色配置与 Run 策略快照不一致")
         state = snapshot["state"]
+        if expected_version is not None and snapshot["version"] != expected_version:
+            raise LoopExecutionError("阶段状态已改变，拒绝旧 Actor 调用", code="stale_context")
         if task_check and role != Role.JUDGE:
             raise LoopConfigurationError("只有 Judge 可以执行 Task 验证")
         schema = {Role.TODO_PLANNER: TodoPlan, Role.STAGE_PLANNER: StagePlan,
@@ -67,6 +71,8 @@ class ModelService:
         binding = {"run_version": snapshot["version"], "prompt_version": self.compiler.config.prompt_version,
                    "schema": schema.__name__, "todo_id": todo_id,
                    "stage_attempt": state.active_attempt_id if state else None}
+        if stream:
+            binding["stream"] = True
 
         def parse(response: ChatResponse) -> BaseModel | None:
             if response.message.role != "assistant":
@@ -75,7 +81,9 @@ class ModelService:
                 if role != Role.ACTOR or response.finish_reason != "tool_calls" or not tools:
                     raise ValueError("当前角色或结束原因不允许工具调用")
                 ids = [c.id for c in response.message.tool_calls]
-                if any(not i for i in ids) or len(ids) != len(set(ids)):
+                if any(not i for i in ids) or len(ids) != len(set(ids)) or any(
+                    c.type != "function" or not c.function.name for c in response.message.tool_calls
+                ):
                     raise ValueError("工具调用缺少唯一身份")
                 return None  # 完整工具参数的准入仍由已有 ToolExecutor 负责。
             if response.finish_reason != "stop":
@@ -111,7 +119,7 @@ class ModelService:
             attempt = admission["attempt"]
             response = None
             try:
-                response = await self._complete(request, cancellation_event)
+                response = await self._complete(request, cancellation_event, stream=stream)
                 output = parse(response)
             except ModelBackendError as error:
                 await asyncio.to_thread(self.repository.finish_model, call_id, attempt, error=str(error), retryable=error.retryable)
@@ -128,8 +136,28 @@ class ModelService:
             await asyncio.to_thread(self.repository.finish_model, call_id, attempt, response=response)
             return RoleResult(response, output, False)
 
-    async def _complete(self, request, cancellation_event):
-        work = asyncio.create_task(self.backend.complete(request))
+    async def _stream_response(self, request):
+        """复用 Backend 聚合的最终响应；流未闭合时绝不释放其中的工具调用。"""
+        response = None
+        iterator = self.backend.stream(request)
+        try:
+            async for event in iterator:
+                if response is not None:
+                    raise ValueError("完整响应之后仍出现流事件")
+                if event.type == ModelEventType.RESPONSE_COMPLETED:
+                    if event.response is None:
+                        raise ValueError("完整流事件缺少响应")
+                    response = event.response
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if close is not None:
+                await close()
+        if response is None:
+            raise ValueError("流结束但没有完整响应，丢弃未完成工具调用")
+        return response
+
+    async def _complete(self, request, cancellation_event, *, stream=False):
+        work = asyncio.create_task(self._stream_response(request) if stream else self.backend.complete(request))
         cancel = asyncio.create_task(cancellation_event.wait()) if cancellation_event else None
         tasks = {work, cancel} if cancel else {work}
         try:

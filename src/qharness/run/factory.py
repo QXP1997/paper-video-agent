@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from qharness.loop.model_service import ModelService
     from qharness.loop.repository import LoopRepository
     from qharness.loop.tool_service import ToolService
+    from qharness.loop.actor import Actor
     from qharness.tools.executor import ToolExecutor
 
 from qharness.persistence import DatabaseManager
@@ -38,6 +39,7 @@ class LoopServices:
     repository: LoopRepository
     model: ModelService
     tools: ToolService
+    actor: Actor
 
 
 def create_loop_services(
@@ -50,13 +52,15 @@ def create_loop_services(
     from qharness.loop.model_service import ModelService
     from qharness.loop.repository import LoopRepository
     from qharness.loop.tool_service import ToolService
+    from qharness.loop.actor import Actor
 
     database_manager.initialize()
     repository = LoopRepository(database_manager.session_factory, tenant_id=context.tenant_id,
                                 workspace_id=context.workspace_id, run_id=context.run_id)
     repository.create(contract, config, executor.policy, state=state)
-    return LoopServices(repository, ModelService(backend, repository, ContextCompiler(config)),
-                        ToolService(executor, context, repository))
+    model = ModelService(backend, repository, ContextCompiler(config))
+    tools = ToolService(executor, context, repository)
+    return LoopServices(repository, model, tools, Actor(model, tools))
 
 
 def create_run_context(

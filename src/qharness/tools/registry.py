@@ -10,7 +10,7 @@ from jsonschema.exceptions import SchemaError
 
 from qharness.exception.error import ToolRegistrationError
 from qharness.model.models import ToolDefinition
-from qharness.tools.base import Tool
+from qharness.tools.base import Tool, ToolEffect
 
 
 _TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -24,6 +24,11 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         """注册工具；名称重复或定义不合法时直接报错。"""
+
+        if not isinstance(tool.effect, ToolEffect) or not isinstance(tool.parallel_safe, bool):
+            raise ToolRegistrationError("工具 effect / parallel_safe 声明类型不合法")
+        if tool.parallel_safe and tool.effect != ToolEffect.READ_ONLY:
+            raise ToolRegistrationError("只有只读工具可以声明 parallel_safe")
 
         if not _TOOL_NAME_PATTERN.fullmatch(tool.name):
             raise ToolRegistrationError(

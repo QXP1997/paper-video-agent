@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import Field
 
-from qharness.tools.base import Tool, ToolParameters
+from qharness.tools.base import Tool, ToolParameters, ToolEffect
 from qharness.workspace import WorkspaceContext
 
 
@@ -99,4 +99,6 @@ def create_read_file_tool(workspace: WorkspaceContext) -> Tool:
         ),
         parameters=ReadFileParameters,
         handler=read_file,
+        effect=ToolEffect.READ_ONLY,
+        parallel_safe=True,
     )

@@ -55,4 +55,4 @@ class ContextTests(unittest.TestCase):
     def test_shipped_config_loads(self):
         from pathlib import Path
         config = load_loop_config(Path(__file__).resolve().parents[2] / "config/loop.example.toml")
-        self.assertEqual(config.prompt_version, "loop-roles-v1")
+        self.assertEqual(config.prompt_version, "loop-roles-v2")

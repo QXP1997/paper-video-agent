@@ -3,6 +3,7 @@
 
 from qharness.tools.base import (
     Tool,
+    ToolEffect,
     ToolErrorCode,
     ToolExecutionPolicy,
     ToolExecutionRequest,
@@ -27,6 +28,7 @@ from qharness.tools.registry import ToolRegistry
 
 __all__ = [
     "Tool",
+    "ToolEffect",
     "BuiltinToolProvider",
     "ExpiringCursorStore",
     "FileMutationToolProvider",

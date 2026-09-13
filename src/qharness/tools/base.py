@@ -42,6 +42,13 @@ class ToolErrorCode(StrEnum):
     RESULT_TOO_LARGE = "result_too_large"
 
 
+class ToolEffect(StrEnum):
+    READ_ONLY = "read_only"
+    WORKSPACE_WRITE = "workspace_write"
+    EXTERNAL = "external"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class Tool:
     """一个可注册、可被模型调用的本地工具。"""
@@ -52,6 +59,9 @@ class Tool:
     handler: ToolHandler
     strict: bool = False
     requires_approval: bool = False
+    # 由工具实现者声明，模型不能自行把写工具标记成只读。
+    effect: ToolEffect = ToolEffect.UNKNOWN
+    parallel_safe: bool = False
 
     def to_definition(self) -> ToolDefinition:
         """转换为模型调用层可以直接使用的工具定义。"""

@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import asdict, replace
 from typing import Any
 
-from qharness.exception import LoopConfigurationError
+from qharness.exception import LoopConfigurationError, LoopExecutionError
 from qharness.loop.models import Phase
 from qharness.loop.repository import LoopRepository, digest
 from qharness.run.context import RunContext
@@ -29,17 +29,23 @@ class ToolService:
             self.context.tool_state.calls_by_tool = counts
             self.context.tool_state.total_calls = sum(counts.values())
 
-    async def execute(self, call_id: str, tool_name: str, arguments: Any, *, retry: bool = False) -> ToolExecutionResult:
+    async def execute(self, call_id: str, tool_name: str, arguments: Any, *, retry: bool = False,
+                      expected_version: int | None = None) -> ToolExecutionResult:
         """call_id 是 Run 内稳定的逻辑调用身份；retry 只允许已证明未进 Handler 的失败。"""
         if self.context.cancelled:
             return ToolExecutionResult(call_id, tool_name, False, "运行已取消", 0, error_code="cancelled")
         snapshot = await asyncio.to_thread(self.repository.snapshot)
         state = snapshot["state"]
+        if expected_version is not None and snapshot["version"] != expected_version:
+            raise LoopExecutionError("阶段状态已改变，拒绝旧工具批次", code="stale_context")
         if state is None or state.phase != Phase.ACTING:
             raise LoopConfigurationError("工具调用必须处于 ACTING 阶段")
         tool = self.executor.registry.get(tool_name)
         binding = {"run_version": snapshot["version"], "stage_attempt": state.active_attempt_id,
                    "tool_definition": digest(asdict(tool.to_definition())) if tool else None}
+        if tool is not None:
+            binding["effect"] = str(tool.effect)
+            binding["parallel_safe"] = tool.parallel_safe
         await asyncio.to_thread(self.repository.admit_tool, call_id, tool_name, arguments, binding, self.executor.policy,
                                 requires_approval=tool.requires_approval if tool else False)
         await asyncio.to_thread(self._refresh_counts)

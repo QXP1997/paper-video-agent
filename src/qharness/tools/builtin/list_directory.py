@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import Field
 
 from qharness.exception import ToolExecutionError, WorkspacePathError
-from qharness.tools.base import Tool, ToolErrorCode, ToolParameters
+from qharness.tools.base import Tool, ToolErrorCode, ToolParameters, ToolEffect
 from qharness.tools.cursor import ExpiringCursorStore
 from qharness.workspace import WorkspaceContext
 
@@ -272,4 +272,5 @@ def create_list_directory_tool(
         ),
         parameters=ListDirectoryParameters,
         handler=list_directory,
+        effect=ToolEffect.READ_ONLY,  # 游标有进程内状态，仍保留顺序执行。
     )

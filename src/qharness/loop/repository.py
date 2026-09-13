@@ -186,7 +186,9 @@ class LoopRepository:
         with self._session(transaction=True) as session:
             existing = session.get(RunRecord, self.key)
             if existing is not None:
-                if existing.contract != contract.model_dump_json() or json.loads(existing.policy) != config.snapshot(tools):
+                policy = json.loads(existing.policy)
+                policy["loop"] = LoopConfig.model_validate(policy["loop"]).model_dump(mode="json")
+                if existing.contract != contract.model_dump_json() or policy != config.snapshot(tools):
                     fail("已存在 Run 的任务契约或策略不同")
                 return  # 重新装配不能覆盖已有状态或清零预算。
             session.add(RunRecord(key=self.key, tenant_id=self.tenant_id, workspace_id=self.workspace_id,
@@ -209,7 +211,8 @@ class LoopRepository:
                 fail("Run 不存在或不属于当前租户", "not_found")
             return {"contract": TaskContract.model_validate_json(row.contract),
                     "state": RunState.model_validate_json(row.state) if row.state else None,
-                    "version": row.version, "policy": json.loads(row.policy),
+                    "version": row.version, "policy": {**json.loads(row.policy),
+                        "loop": LoopConfig.model_validate(json.loads(row.policy)["loop"]).model_dump(mode="json")},
                     "budget": {name: getattr(row, name) for name in
                                ("model_attempts", "used_tokens", "reserved_tokens", "tool_calls", "tool_executions")}}
 

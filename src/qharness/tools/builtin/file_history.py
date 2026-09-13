@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from qharness.tools.base import Tool, ToolParameters, current_operation_id
+from qharness.tools.base import Tool, ToolParameters, ToolEffect, current_operation_id
 from qharness.workspace import WorkspaceMutationService
 
 
@@ -103,4 +103,5 @@ def create_rollback_file_change_tool(
         ),
         parameters=FileOperationParameters,
         handler=rollback_file_change,
+        effect=ToolEffect.WORKSPACE_WRITE,
     )

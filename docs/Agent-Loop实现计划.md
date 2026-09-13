@@ -1,6 +1,6 @@
 # QHarness Agent Loop 实现计划
 
-> 状态：批次 1、2 已实现并通过离线行为检查；批次 3—8 待实现<br>
+> 状态：批次 1—3 已实现并通过离线行为检查；批次 4—8 待实现<br>
 > 制定日期：2026-09-13  
 > 代码基线：HEAD `8ff37fe` 及当日工作区  
 > 设计依据：[Agent Loop 文献综述与 QHarness 设计建议](./Agent-Loop文献综述与QHarness设计建议.md)  
@@ -72,12 +72,12 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 **目的：** 给定 StagePlan 后，模型能自主连续行动，并在合适边界交回结果。
 
-- [ ] 实现模型响应分类、完整流聚合、工具批次回填和下一轮 Context。
-- [ ] 支持 CANDIDATE / NEEDS_REPLAN / BLOCKED / STALLED 的结构化阶段交回。
-- [ ] 校验 stop_when / replan_when；工具错误可以在内层修复，关键前提失效可以提前交回。
-- [ ] 支持 Tool Effect、只读并行段与写屏障；无法证明独立时保留顺序。
-- [ ] 接入共享预算、取消、协议纠错和明确错误观察。
-- [ ] 提供“给定阶段目标，自动读—改—测”的独立示例。
+- [x] 实现模型响应分类、完整流聚合、工具批次回填和下一轮 Context。
+- [x] 支持 CANDIDATE / NEEDS_REPLAN / BLOCKED / STALLED 的结构化阶段交回。
+- [x] 校验 stop_when / replan_when；工具错误可以在内层修复，关键前提失效可以提前交回。
+- [x] 支持 Tool Effect、只读并行段与写屏障；无法证明独立时保留顺序。
+- [x] 接入共享预算、取消、协议纠错和明确错误观察。
+- [x] 提供“给定阶段目标，自动读—改—测”的独立示例。
 
 主要位置：`loop/actor.py`、`loop/scheduler.py`、`loop/prompts/actor.*`、`tests/loop/test_actor.py`。
 
@@ -289,7 +289,49 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 - Artifact 保存 Handler 已经返回的完整业务数据及输出摘要，数据库使用现有应用存储；沙箱自身已经截断的 stdout/stderr 不会被凭空恢复。极小摘要限额容不下 Artifact 元数据时，引用仍保存在 ToolExecutionResult.artifact_id 中，判断业务状态始终读取 data。
 - 已验证 SQLite 的升级与并发行为；MySQL 大字段使用 LONGTEXT 类型适配，MySQL / PostgreSQL 的真实数据库联调仍在后续生产检查中完成。
 
-**下一步为批次 3：单阶段 Action Agent Loop。** 给定 StagePlan，复用本批 ModelService / ToolService 自动完成“模型决策 → 工具批次 → 观察回填 → 下一轮”，直到提交 StageOutcome。优先扩展已有模型流聚合与工具执行链。
+### 5.3 批次 3
+
+**交付结果：单阶段 Action Agent Loop 已贯通，累计 86 项离线测试通过。** 本批新增 21 项测试；固定分页任务实际经历读取源文件、原回归失败、修改文件、回归通过，再交回候选结果。
+
+| 实际位置 | 交付内容 |
+|---|---|
+| `loop/actor.py` | Actor.run 接收 StagePlan / attempt_id，循环调用模型与工具；只提交 StageOutcome，状态到 VERIFYING 为止 |
+| `loop/scheduler.py` | 使用已有 ToolService 执行批次；独立只读段有界并行，写入和未知效果形成顺序屏障 |
+| 原 `loop/model_service.py`、`backends/openai_compatible.py` | 复用已有流聚合，只有闭合的完整响应才能交给 Actor；补充流资源关闭和阶段版本检查 |
+| 原 `loop/models.py`、`loop/config.py`、`loop/context.py` | 阶段交回条件引用、行动轮数/协议纠错/批次上限、Actor Prompt v2；按既有配置快照校验 |
+| 原 `tools/base.py`、`tools/registry.py` 与内置工具 | 新增可信 ToolEffect / parallel_safe 声明；读取和搜索允许并行，带游标的目录读取仍顺序执行 |
+| 原 `loop/tool_service.py`、`loop/repository.py` | 工具绑定记录效果声明；拒绝基于旧阶段版本的新行动；复用既有调用身份、缓存、预算与原子状态更新 |
+| 原 `run/factory.py` | create_loop_services 返回的 services.actor 可以直接执行给定阶段 |
+| `examples/17_stage_actor.py` | 使用真实已配置 Backend 与 SRT 的独立分页修复示例，支持 --stream；复用原 Provider 与工作区历史服务 |
+
+执行规则：
+
+- 每个模型轮次生成稳定逻辑调用 ID；Provider 在不同轮次重复使用工具 ID 时，对回填历史做确定性命名隔离，保留 reasoning_content 与原始响应记录。
+- 只有显式声明 READ_ONLY 且 parallel_safe 的工具可以组成并行段。写工具不能声明 parallel_safe；UNKNOWN 和未声明工具均顺序执行。
+- 任一调用失败或业务退出码非零时，无法证明后续调用可独立继续的部分返回 SKIPPED，下一模型轮根据真实结果修正。并行段内已经派发的独立读取会全部收齐。
+- 流未闭合、响应截断或协议不合法时，不执行其中的工具；工具参数不合法则由原 ToolExecutor 返回错误观察。协议修正有独立次数上限，同时消耗共享模型预算。
+- candidate 必须引用计划中已有的停止条件并提供产出或观察依据；needs_replan 必须引用重规划条件并报告前提变化。未知条件和不存在的观察引用会被拒绝；已报告前提变化的结果不能作为 candidate 交回。
+- 预算、审批、取消或未知执行效果导致 blocked；反复协议错误或达到行动轮数上限导致 stalled。Actor 不提交 Todo PASS 或 Task PASS。
+- 同一尝试重入时按确定性调用身份从账本重建已完成轨迹，不重做已有工具行动，也不重置轮数。完整中断恢复、单写者所有权和 Steering 仍在批次 7 实施。
+
+验证结果与运行入口：
+
+~~~powershell
+# 离线测试：真实临时文件、Dulwich 和数据库；模型为脚本替身。
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+
+# 真实模型与 SRT 示例：需要原有配置文件及已可用的沙箱。
+.\.venv\Scripts\python.exe examples/17_stage_actor.py
+.\.venv\Scripts\python.exe examples/17_stage_actor.py --stream
+~~~
+
+已验证正常及流式工具回填、半截参数不执行、SDK 增量聚合与流关闭、错误后修正、只读并行/写屏障、在途取消、状态变化后的旧调用拒绝、预算与批次上限，以及同一版本下的重入去重。真实示例已验证导入与命令入口，本批没有实际访问模型服务或启动 SRT 进行端到端评测。
+
+边界说明：stop_when / replan_when 是自然语言契约，本批验证引用、状态和依据结构，并让模型每轮检查条件；不能由引用正确推出条件在现实中确实成立。StageOutcome 仍是候选或阻塞报告，真实成功判定由批次 4 的 Verifier 完成。示例中的“不得修改测试”同样属于待验证的任务约束，不能仅凭 Actor 声明证明遵守。
+
+Prompt 默认版本升级为 `loop-roles-v2`，保留 v1 供旧策略读取与原角色调用使用；不把已有 Run 的策略静默改成 v2。新增配置默认值可以用于读取旧快照，但策略、请求上下文或工具效果声明不一致时仍拒绝复用同一个逻辑调用；历史结果可通过原读取接口取得。建议新的行动任务使用新 Run 和 v2 策略。
+
+**下一步为批次 4：Stage / Todo / Task 验证与证据有效性。** 复用现有沙箱与工具调用边界执行检查，判定 PASS / FAIL / INCONCLUSIVE / ERROR，并把证据绑定到实际产物、检查定义和环境版本。
 
 ## 6. 进度维护规则
 

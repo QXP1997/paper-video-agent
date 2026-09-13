@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from qharness.tools.base import Tool, ToolParameters, current_operation_id
+from qharness.tools.base import Tool, ToolParameters, ToolEffect, current_operation_id
 from qharness.workspace import WorkspaceMutationService
 
 
@@ -55,4 +55,5 @@ def create_write_file_tool(service: WorkspaceMutationService) -> Tool:
         ),
         parameters=WriteFileParameters,
         handler=write_file,
+        effect=ToolEffect.WORKSPACE_WRITE,
     )
