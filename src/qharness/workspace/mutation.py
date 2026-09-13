@@ -115,6 +115,7 @@ class WorkspaceMutationService:
         *,
         overwrite: bool = False,
         expected_sha256: str | None = None,
+        operation_id: str | None = None,
     ) -> FileMutationResult:
         """创建或完整覆盖一个 UTF-8 文件，并生成独立 Commit。"""
 
@@ -140,6 +141,7 @@ class WorkspaceMutationService:
             )
             return self._apply_plans(
                 tool_name="write_file",
+                operation_id=operation_id,
                 plans=(_PlannedFileChange(relative_path, file_path, before, after),),
                 base_commit_id=base_commit_id,
             )
@@ -152,6 +154,7 @@ class WorkspaceMutationService:
         *,
         expected_replacements: int = 1,
         expected_sha256: str | None = None,
+        operation_id: str | None = None,
     ) -> FileMutationResult:
         """按精确出现次数替换文本，避免模糊定位造成意外修改。"""
 
@@ -188,11 +191,12 @@ class WorkspaceMutationService:
             after = self._snapshot_content(encoded_content, mode=before.mode)
             return self._apply_plans(
                 tool_name="replace_text",
+                operation_id=operation_id,
                 plans=(_PlannedFileChange(relative_path, file_path, before, after),),
                 base_commit_id=base_commit_id,
             )
 
-    def apply_patch(self, patch_text: str) -> FileMutationResult:
+    def apply_patch(self, patch_text: str, *, operation_id: str | None = None) -> FileMutationResult:
         """一次性应用结构化多文件补丁，并生成一个原子业务操作。"""
 
         patch_files = parse_patch(patch_text)
@@ -234,6 +238,7 @@ class WorkspaceMutationService:
                 )
             return self._apply_plans(
                 tool_name="apply_patch",
+                operation_id=operation_id,
                 plans=tuple(plans),
                 base_commit_id=base_commit_id,
             )
@@ -281,14 +286,14 @@ class WorkspaceMutationService:
         with self._mutation_lock:
             return self.version_store.workspace_status(self.workspace.root)
 
-    def begin_external_operation(self, tool_name: str) -> ExternalMutationToken:
+    def begin_external_operation(self, tool_name: str, *, operation_id: str | None = None) -> ExternalMutationToken:
         """保存命令执行前基线，并阻止其他 Harness 写操作并发进入。"""
 
         with self._mutation_lock:
             self._ensure_no_external_operation()
             base_commit_id = self._checkpoint_external_changes()
             token = ExternalMutationToken(
-                operation_id=uuid.uuid4().hex,
+                operation_id=operation_id or uuid.uuid4().hex,
                 tool_name=tool_name,
                 base_commit_id=base_commit_id,
             )
@@ -363,7 +368,7 @@ class WorkspaceMutationService:
                 ):
                     del _ACTIVE_EXTERNAL_OPERATIONS[self._mutation_key]
 
-    def rollback(self, operation_id: str) -> FileMutationResult:
+    def rollback(self, operation_id: str, *, rollback_operation_id: str | None = None) -> FileMutationResult:
         """反向应用某次 Commit 的文件变化，保留之后的无关修改。"""
 
         with self._mutation_lock:
@@ -420,6 +425,7 @@ class WorkspaceMutationService:
                 base_commit_id=current_head,
                 origin="rollback",
                 original_operation_id=operation_id,
+                operation_id=rollback_operation_id,
             )
 
     def _checkpoint_external_changes(self) -> str:
@@ -456,6 +462,7 @@ class WorkspaceMutationService:
         base_commit_id: str,
         origin: str = "agent",
         original_operation_id: str | None = None,
+        operation_id: str | None = None,
     ) -> FileMutationResult:
         """补偿式落盘全部文件，创建 Commit，最后确认数据库台账。"""
 
@@ -476,6 +483,7 @@ class WorkspaceMutationService:
                 origin=origin,
             )
         operation_id = self.history_repository.begin_operation(
+            operation_id=operation_id,
             run_id=self.run_id,
             tool_name=tool_name,
             origin=origin,

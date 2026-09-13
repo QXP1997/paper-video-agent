@@ -116,6 +116,8 @@ class ChatRequest:
     thinking_mode: str | None = None
     reasoning_effort: str | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)
+    # None 沿用 Backend 默认；Loop 每次网络尝试设为 0，避免嵌套重试。
+    backend_max_retries: int | None = None
 
 
 @dataclass(slots=True)
@@ -154,4 +156,3 @@ class ChatStreamEvent:
     usage: Usage | None = None
     response: ChatResponse | None = None
     raw: dict[str, Any] = field(default_factory=dict)
-

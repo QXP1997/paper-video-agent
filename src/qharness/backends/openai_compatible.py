@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 import openai
@@ -31,6 +33,23 @@ class OpenAICompatibleBackend(ModelBackend):
     消息、流式输出、工具调用和 Provider 专属 extra_body。
     """
 
+    supports_request_retry_control = True
+
+    def resolve_request(self, request: ChatRequest) -> ChatRequest:
+        arguments = self._build_request_arguments(request)
+        return replace(deepcopy(request), model=arguments["model"],
+            temperature=arguments.get("temperature"), max_tokens=arguments.get("max_tokens"),
+            tool_choice=arguments.get("tool_choice"), reasoning_effort=arguments.get("reasoning_effort"),
+            extra_body=arguments.get("extra_body", {}))
+
+    def _request_client(self, request: ChatRequest) -> AsyncOpenAI:
+        retries = request.backend_max_retries
+        if retries is None:
+            return self.client
+        if isinstance(retries, bool) or not isinstance(retries, int) or retries < 0:
+            raise ValueError("backend_max_retries 必须是非负整数或 None")
+        return self.client.with_options(max_retries=retries)
+
     def __init__(self, config: ModelBackendConfig) -> None:
         self.config = config
         self.client = AsyncOpenAI(
@@ -44,7 +63,7 @@ class OpenAICompatibleBackend(ModelBackend):
         """执行一次非流式 Chat Completions 调用。"""
 
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._request_client(request).chat.completions.create(
                 **self._build_request_arguments(request),
                 stream=False,
             )
@@ -79,7 +98,7 @@ class OpenAICompatibleBackend(ModelBackend):
             arguments["stream_options"] = {"include_usage": True}
 
         try:
-            stream = await self.client.chat.completions.create(**arguments)
+            stream = await self._request_client(request).chat.completions.create(**arguments)
         except openai.OpenAIError as error:
             raise self._map_error(error) from error
 

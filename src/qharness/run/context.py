@@ -84,6 +84,7 @@ class RunContext:
         tool_name: str,
         raw_arguments: str | Mapping[str, Any],
         metadata: Mapping[str, Any] | None = None,
+        operation_id: str | None = None,
     ) -> ToolExecutionRequest:
         """创建自动携带 Run 标识、租户信息和取消事件的工具请求。"""
 
@@ -103,6 +104,7 @@ class RunContext:
             run_id=self.run_id,
             metadata=request_metadata,
             cancellation_event=self.cancellation_event,
+            operation_id=operation_id,
         )
 
 

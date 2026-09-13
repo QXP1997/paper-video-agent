@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from qharness.tools.base import Tool, ToolParameters
+from qharness.tools.base import Tool, ToolParameters, current_operation_id
 from qharness.workspace import WorkspaceMutationService
 
 
@@ -93,7 +93,7 @@ def create_rollback_file_change_tool(
     def rollback_file_change(operation_id: str) -> dict[str, object]:
         """恢复操作前版本，并把回滚自身记录为一条新操作。"""
 
-        return service.rollback(operation_id).to_dict()
+        return service.rollback(operation_id, rollback_operation_id=current_operation_id()).to_dict()
 
     return Tool(
         name="rollback_file_change",

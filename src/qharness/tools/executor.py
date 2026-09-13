@@ -29,6 +29,7 @@ from qharness.tools.base import (
     ToolExecutionResult,
     ToolExecutionState,
     ToolRuntimePolicy,
+    _CURRENT_TOOL_REQUEST,
 )
 from qharness.tools.hooks import ToolExecutionHook
 from qharness.tools.registry import ToolRegistry
@@ -61,6 +62,16 @@ class ToolExecutor:
     ) -> ToolExecutionResult:
         """执行一次工具调用，所有预期失败均转换为标准结果。"""
 
+        rejected = await self.admit(request, state)
+        if rejected is not None:
+            return rejected
+        return await self.execute_admitted(request)
+
+    async def admit(
+        self, request: ToolExecutionRequest, state: ToolExecutionState,
+    ) -> ToolExecutionResult | None:
+        """独立调用入口的内存额度准入；Loop 使用仓储的持久准入替代此步。"""
+
         started_at = time.perf_counter()
         tool = self.registry.get(request.tool_name)
         tool_policy = self.policy.for_tool(request.tool_name)
@@ -77,6 +88,18 @@ class ToolExecutor:
                 reason or "工具调用次数已达到上限。",
                 started_at,
             )
+
+        return None
+
+    async def execute_admitted(self, request: ToolExecutionRequest) -> ToolExecutionResult:
+        """执行已经准入的调用；参数、Hook、并发、超时和取消仍全部生效。
+
+        这是可信控制器接口，调用方必须先经 admit 或持久账本预留额度。
+        """
+
+        started_at = time.perf_counter()
+        tool = self.registry.get(request.tool_name)
+        tool_policy = self.policy.for_tool(request.tool_name)
 
         if tool is None:
             return await self._failure(
@@ -109,7 +132,12 @@ class ToolExecutor:
                 tool_policy=tool_policy,
             )
             content = self._serialize_result(value)
-            content, truncated = self._limit_result(content, tool_policy)
+            structured = json.loads(content) if not isinstance(value, str) else value
+            try:
+                content, truncated = self._limit_result(content, tool_policy)
+            except ToolExecutionError as error:
+                failure = await self._failure(request, tool, error.code, str(error), started_at)
+                return replace(failure, data=structured, truncated=True)
             result = ToolExecutionResult(
                 call_id=request.call_id,
                 tool_name=request.tool_name,
@@ -117,6 +145,7 @@ class ToolExecutor:
                 content=content,
                 elapsed_seconds=time.perf_counter() - started_at,
                 truncated=truncated,
+                data=structured,
             )
             hook_warnings = await self._run_after_hooks(request, tool, result)
             if hook_warnings:
@@ -348,14 +377,17 @@ class ToolExecutor:
     async def _invoke(tool: Tool, request: ToolExecutionRequest) -> Any:
         """调用同步或异步工具，并避免同步函数阻塞事件循环。"""
 
-        arguments = request.arguments or {}
-        if inspect.iscoroutinefunction(tool.handler):
-            return await tool.handler(**arguments)
-
-        value = await asyncio.to_thread(tool.handler, **arguments)
-        if inspect.isawaitable(value):
-            return await value
-        return value
+        token = _CURRENT_TOOL_REQUEST.set(request)
+        try:
+            arguments = request.arguments or {}
+            if inspect.iscoroutinefunction(tool.handler):
+                return await tool.handler(**arguments)
+            value = await asyncio.to_thread(tool.handler, **arguments)
+            if inspect.isawaitable(value):
+                return await value
+            return value
+        finally:
+            _CURRENT_TOOL_REQUEST.reset(token)
 
     @staticmethod
     def _serialize_result(value: Any) -> str:

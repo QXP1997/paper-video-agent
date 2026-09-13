@@ -1,6 +1,6 @@
 # QHarness Agent Loop 实现计划
 
-> 状态：批次 1 已实现并通过离线行为检查；批次 2—8 待实现<br>
+> 状态：批次 1、2 已实现并通过离线行为检查；批次 3—8 待实现<br>
 > 制定日期：2026-09-13  
 > 代码基线：HEAD `8ff37fe` 及当日工作区  
 > 设计依据：[Agent Loop 文献综述与 QHarness 设计建议](./Agent-Loop文献综述与QHarness设计建议.md)  
@@ -54,15 +54,15 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 **目的：** 让所有推理角色通过同一受控调用路径运行，工具身份与计数从开始就可恢复。
 
-- [ ] 实现角色调用服务，复用 ModelBackend，区分 TODO_PLANNER / STAGE_PLANNER / ACTOR / JUDGE。
-- [ ] 实现基础 Context Compiler：按角色注入任务、Todo、StagePlan、观察和反馈；校验消息配对与输入容量。
-- [ ] 定义 loop 配置、resolved_policy 和 Prompt 版本；保留当前工具配置的继承与 None 语义。
-- [ ] 建立 Run、消息、模型请求尝试、工具逻辑调用/执行和预算的仓储及迁移。
-- [ ] 拆分工具准入与实际执行：同一逻辑调用计数一次，网络与执行重试分别计量。
-- [ ] 将稳定 operation_id 从可信执行上下文传给文件修改和 run_command，关联 Loop、Workspace 与 Sandbox。
-- [ ] 保存结构化工具结果和输出 Artifact；模型可见摘要与业务判定字段分离。
-- [ ] 固定模型重试归属：Loop 管理的调用统一配置请求重试，避免与 SDK 内部重试相乘；保留独立 Backend 调用的兼容方式。
-- [ ] 新增 Alembic revision，验证现有 workspace 历史数据升级后仍可使用。
+- [x] 实现角色调用服务，复用 ModelBackend，区分 TODO_PLANNER / STAGE_PLANNER / ACTOR / JUDGE。
+- [x] 实现基础 Context Compiler：按角色注入任务、Todo、StagePlan、观察和反馈；校验消息配对与输入容量。
+- [x] 定义 loop 配置、resolved_policy 和 Prompt 版本；保留当前工具配置的继承与 None 语义。
+- [x] 建立 Run、消息、模型请求尝试、工具逻辑调用/执行和预算的仓储及迁移。
+- [x] 拆分工具准入与实际执行：同一逻辑调用计数一次，网络与执行重试分别计量。
+- [x] 将稳定 operation_id 从可信执行上下文传给文件修改和 run_command，关联 Loop、Workspace 与 Sandbox。
+- [x] 保存结构化工具结果和输出 Artifact；模型可见摘要与业务判定字段分离。
+- [x] 固定模型重试归属：Loop 管理的调用统一配置请求重试，避免与 SDK 内部重试相乘；保留独立 Backend 调用的兼容方式。
+- [x] 新增 Alembic revision，验证现有 workspace 历史数据升级后仍可使用。
 
 主要位置：`loop/model_service.py`、`loop/repository.py`、`loop/config.py`、`loop/budget.py`、`context/compiler.py`，以及现有 tools、workspace、persistence。
 
@@ -195,7 +195,9 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 - 批次 5 完成：从用户目标到 Task 验收的推理主线已贯通。
 - 批次 8 完成：完整生产目标通过联调、故障检查与真实任务评测。
 
-## 5. 批次 1 交付与下一步
+## 5. 已完成批次与下一步
+
+### 5.1 批次 1
 
 批次 1 已交付以下内容：
 
@@ -232,7 +234,7 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 本批复用情况：ScriptedModelBackend 继承现有 ModelBackend 并直接使用 ChatRequest / ChatResponse / ChatStreamEvent；可控工具仅提供 Handler，通过现有 Tool / ToolRegistry / ToolExecutor 校验与执行；临时工作区直接构造 WorkspaceContext；业务异常扩展已有 exception 模块。新增生产模块仅承载原仓库尚无实现的推理契约与纯状态转换，未改写现有 RunContext 或执行基础设施。
 
-当前实现边界：
+批次 1 交付时的边界（持久仓储与预算现已由批次 2 补齐）：
 
 - reducer 校验已提交反馈的转换是否合法，不负责生成路由、规划或模型判断。真实 Planner / Actor / Verifier 仍按后续批次实施。
 - `evidence_refs` 当前只校验引用及覆盖关系；真实检查、证据来源和代码/环境版本失效由批次 4 接入。未知依赖时，对 Todo 依赖及共享验收项保守重开。
@@ -240,7 +242,54 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 - REPAIR 保留整个 StagePlan 并分配新 attempt_id；REPLAN_STAGE 保留阶段 ID、递增计划版本；INVESTIGATE / ADVANCE 的新阶段使用新 ID；RETRY_CHECK 留在当前尝试的验证阶段。等待恢复保留原阶段与尝试，终态运行不再接收推理事件。
 - 状态可 JSON 往返，但尚未接入持久仓储、数据库 CAS 或预算；纯 reducer 的版本检查不能替代数据库原子提交。
 
-**下一步为批次 2。** 先沿现有 ModelBackend 与 ToolExecutor 梳理调用链，再补角色输出校验、基础上下文和稳定执行身份；优先扩展已有模型、工具、工作区与 persistence 模块，确认缺少独立职责后才新增服务。批次 3 在此基础上实现真实的单阶段 Action Agent Loop。
+### 5.2 批次 2
+
+**交付结果：共享角色调用与持久执行账本已接通，累计 65 项离线测试通过。** 本批新增 31 项行为检查，使用真实 SQLite 迁移、真实工具执行器、工作区与 Dulwich；模型网络和 Shell 使用测试替身。
+
+| 实际位置 | 已实现行为与复用关系 |
+|---|---|
+| `loop/config.py`、`config/loop.example.toml` | Loop 限额、请求重试、Prompt 版本；复用已有 TOML 读取，工具配置仍由 tools/config.py 负责 |
+| `loop/context.py` | 基础 Context Compiler；直接生成 ChatRequest，注入契约、当前 Todo/Stage、状态中的反馈及观察；拒绝不完整工具配对和超容量输入 |
+| `loop/model_service.py` | 四类角色共用 ModelBackend；Schema 与阶段身份校验；调用记录、重试和预算；角色响应不直接推进 RunState |
+| 现有 `backends/base.py`、`openai_compatible.py`、`model/models.py` | 解析实际生效请求；Loop 请求单独设置 backend_max_retries=0，原独立 Backend 调用仍继承原有配置 |
+| `loop/repository.py` | 复用 SessionFactory / OrmBase；任务状态、消息、模型与工具尝试、完整输出 Artifact、预算和 RunState 原子版本更新 |
+| `loop/tool_service.py` 与原 `tools/executor.py` | 原执行器拆出 admit / execute_admitted；Loop 以持久准入替代内存准入，其余参数、Hook、并发、超时与取消继续复用 |
+| 原 `run/context.py`、`run/factory.py` | 扩展 create_loop_services，在已有 RunContext 上装配共享调用边界；重建服务不清零计数、不覆盖旧状态 |
+| 原文件修改工具、`run_command` 和 `workspace/mutation.py` | 将账本分配的 operation_id 通过可信执行上下文传入已有修改服务与沙箱；不新增模型可伪造的操作身份参数 |
+| `persistence/alembic/versions/0002_loop_ledger.py` | 增加七张 Loop 表，保留三张已有工作区历史表；预算与 Run 行一起更新，不另建一套数据库管理器 |
+| `examples/16_loop_calls.py` | 从契约调用 Planner、安装 Todo 状态、演示一次受控工具执行和重建后的旧结果读取；复用 tests/support 中的离线替身 |
+
+本批将基础 Context Compiler 收在 `loop/context.py`，预算准入与结算收在同一仓储事务中，未为了匹配拟定目录而另建薄封装。后续职责扩大时再按实际需要拆分。
+
+验收覆盖：
+
+- 六个线程重复提交同一逻辑 Tool Call，仅一个取得执行权，其余得到 UNKNOWN；逻辑调用和执行尝试都只计一次。
+- 确认未进入 Handler 的审批拒绝可以显式重试：逻辑计数保持 1，执行器派发尝试增加为 2。已成功、效果不明或无法证明未执行的调用不允许重放。
+- 关闭并重新创建 DatabaseManager、LoopRepository 和 RunContext 后，已完成结果与计数可恢复，Handler 不再次执行。
+- `run_command` 外层调用成功、退出码为 1 时，结构化数据仍明确表示业务失败；摘要长度受限，5000 字符的原始 stdout 可通过 Artifact 读取。
+- 写入、替换、补丁、回滚与命令变更复用现有工作区服务；命令的 Sandbox operation_id 与工作区操作记录一致；模型传入伪造身份会被原参数校验拒绝。
+- 模型重试逐次记录并计量，未知 usage 保留预留额度；无效 JSON、截断输出和错位身份不被接受；旧事件与改变参数的重复逻辑 ID 被拒绝。
+- 测试数据库先建立 `0001_workspace_history` 的真实操作记录，再升级到 `0002_loop_ledger`；旧 Commit 关联仍可读取，迁移后的结构与 ORM Metadata 一致。
+- 异步角色与工具调用中的账本操作通过线程执行；模拟数据库等待时，其他协程仍可推进，不被同步数据库 I/O 阻塞。
+
+验证入口：
+
+~~~powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe -X utf8 examples/15_loop_state.py
+.\.venv\Scripts\python.exe -X utf8 examples/16_loop_calls.py
+~~~
+
+当前边界与后续衔接：
+
+- 四类角色的调用边界已经可调用真实 Backend；本批测试没有访问真实模型，尚不说明规划质量。循环调度、流式消费和多轮工具回填在批次 3，完整 Planner / Executor 主流程在批次 5。
+- Context Compiler 当前保留完整输入，容量不足明确拒绝。默认 Token 估算使用 UTF-8 字节数加消息开销，可注入模型 tokenizer 计数；估算不等于 Provider 精确计费。usage 已知时按实际计量结算，未知时保留预算，避免把失败请求当免费调用。
+- `DISPATCHED` 表示已交给外部执行边界；重启或外层超时后无法证明效果的调用返回 UNKNOWN，不自动恢复执行。完整恢复核对、持久审批、Steering 和进程级运行所有权仍按批次 7 实现。
+- 工具逻辑准入次数与执行器派发尝试分开保存；后者包含参数校验、审批等尚未进入 Handler 的失败，不能当作成功业务操作数。Loop 的计数以账本为准，RunContext.tool_state 是恢复后的运行时投影，同一 Run 不应混用绕开账本的工具入口。
+- Artifact 保存 Handler 已经返回的完整业务数据及输出摘要，数据库使用现有应用存储；沙箱自身已经截断的 stdout/stderr 不会被凭空恢复。极小摘要限额容不下 Artifact 元数据时，引用仍保存在 ToolExecutionResult.artifact_id 中，判断业务状态始终读取 data。
+- 已验证 SQLite 的升级与并发行为；MySQL 大字段使用 LONGTEXT 类型适配，MySQL / PostgreSQL 的真实数据库联调仍在后续生产检查中完成。
+
+**下一步为批次 3：单阶段 Action Agent Loop。** 给定 StagePlan，复用本批 ModelService / ToolService 自动完成“模型决策 → 工具批次 → 观察回填 → 下一轮”，直到提交 StageOutcome。优先扩展已有模型流聚合与工具执行链。
 
 ## 6. 进度维护规则
 

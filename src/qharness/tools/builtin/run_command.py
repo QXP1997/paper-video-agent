@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import Field
 
 from qharness.sandbox.base import SandboxExecutionRequest
-from qharness.tools.base import Tool, ToolParameters
+from qharness.tools.base import Tool, ToolParameters, current_operation_id
 
 if TYPE_CHECKING:
     from qharness.run import RunContext
@@ -50,10 +50,12 @@ def create_run_command_tool(context: RunContext) -> Tool:
 
         mutation_service = context.mutation_service
         token: ExternalMutationToken | None = None
+        operation_id = current_operation_id() or uuid.uuid4().hex
         if mutation_service is not None:
             token = await asyncio.to_thread(
                 mutation_service.begin_external_operation,
                 "run_command",
+                operation_id=operation_id,
             )
 
         result = None
@@ -68,7 +70,7 @@ def create_run_command_tool(context: RunContext) -> Tool:
                     operation_id=(
                         token.operation_id
                         if token is not None
-                        else f"command-{uuid.uuid4().hex}"
+                        else operation_id
                     ),
                     cancellation_event=context.cancellation_event,
                 )

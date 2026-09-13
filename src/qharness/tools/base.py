@@ -7,6 +7,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from contextvars import ContextVar
 from enum import StrEnum
 from typing import Any
 
@@ -98,6 +99,18 @@ class ToolExecutionRequest:
     run_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     cancellation_event: asyncio.Event | None = None
+    # 仅由可信调用方注入，不属于模型工具参数或 metadata。
+    operation_id: str | None = None
+
+
+_CURRENT_TOOL_REQUEST: ContextVar[ToolExecutionRequest | None] = ContextVar("qharness_tool_request", default=None)
+
+
+def current_operation_id() -> str | None:
+    """在 Handler 内读取执行器绑定的操作身份；to_thread 同样传播此上下文。"""
+
+    request = _CURRENT_TOOL_REQUEST.get()
+    return request.operation_id if request is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +125,9 @@ class ToolExecutionResult:
     error_code: str | None = None
     truncated: bool = False
     warnings: tuple[str, ...] = ()
+    # 与 content 的模型摘要分离，保留完整 JSON 业务结果。
+    data: Any = None
+    artifact_id: str | None = None
 
     def to_model_content(self) -> str:
         """生成适合作为 tool 消息回填给模型的文本。"""

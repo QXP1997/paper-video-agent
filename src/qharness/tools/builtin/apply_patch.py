@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from qharness.tools.base import Tool, ToolParameters
+from qharness.tools.base import Tool, ToolParameters, current_operation_id
 from qharness.workspace import WorkspaceMutationService
 
 
@@ -27,7 +27,7 @@ def create_apply_patch_tool(service: WorkspaceMutationService) -> Tool:
     def apply_patch(patch: str) -> dict[str, object]:
         """解析、校验并应用补丁，返回统一操作回执。"""
 
-        return service.apply_patch(patch).to_dict()
+        return service.apply_patch(patch, operation_id=current_operation_id()).to_dict()
 
     return Tool(
         name="apply_patch",

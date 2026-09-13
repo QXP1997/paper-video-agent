@@ -4,6 +4,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from qharness.backends.base import ModelBackend
+    from qharness.loop.config import LoopConfig
+    from qharness.loop.models import RunState, TaskContract
+    from qharness.loop.model_service import ModelService
+    from qharness.loop.repository import LoopRepository
+    from qharness.loop.tool_service import ToolService
+    from qharness.tools.executor import ToolExecutor
 
 from qharness.persistence import DatabaseManager
 from qharness.run.context import RunContext
@@ -19,6 +30,33 @@ from qharness.workspace import (
     WorkspaceHistoryRepository,
     WorkspaceMutationService,
 )
+
+
+@dataclass(frozen=True)
+class LoopServices:
+    """已有 RunContext 上装配的调用边界；Backend 生命周期仍由调用方管理。"""
+    repository: LoopRepository
+    model: ModelService
+    tools: ToolService
+
+
+def create_loop_services(
+    context: RunContext, *, backend: ModelBackend, executor: ToolExecutor,
+    database_manager: DatabaseManager, config: LoopConfig, contract: TaskContract,
+    state: RunState | None = None,
+) -> LoopServices:
+    """复用应用数据库和已有执行依赖；重复装配不重置状态、策略或预算。"""
+    from qharness.loop.context import ContextCompiler
+    from qharness.loop.model_service import ModelService
+    from qharness.loop.repository import LoopRepository
+    from qharness.loop.tool_service import ToolService
+
+    database_manager.initialize()
+    repository = LoopRepository(database_manager.session_factory, tenant_id=context.tenant_id,
+                                workspace_id=context.workspace_id, run_id=context.run_id)
+    repository.create(contract, config, executor.policy, state=state)
+    return LoopServices(repository, ModelService(backend, repository, ContextCompiler(config)),
+                        ToolService(executor, context, repository))
 
 
 def create_run_context(

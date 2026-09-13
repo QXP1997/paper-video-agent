@@ -1,0 +1,12 @@
+[loop]
+prompt_version = "loop-roles-v1"
+max_model_attempts = 100
+max_total_tokens = 1000000
+max_tool_executions = 200
+max_request_attempts = 3
+retry_delay_seconds = 0.5
+model_timeout_seconds = 120.0
+max_input_bytes = 200000
+context_window_tokens = 128000
+max_output_tokens = 4096
+# 工具限额、审批与具名覆盖继续配置在原有 tool.toml。

@@ -121,6 +121,24 @@ Dulwich 与操作数据库的存储方式不同：数据库是全局共用的一
 
 `read_file` 使用 `start_line` 和 `max_lines` 流式读取 UTF-8 文本，只保留本次请求的行并额外读取一行判断是否还有内容，不会把整个文件读入内存，也不再限制文件必须小于 2 MiB。返回 `has_more=true` 时，可以把 `next_start_line` 作为下一次调用的 `start_line`。
 
+## Agent Loop 实现进度
+
+已完成[实现计划](docs/Agent-Loop实现计划.md)的批次 1、2：推理契约、纯状态 reducer、四类角色的共享调用、基础上下文编译、持久预算与执行账本。阶段、Todo、Task 分别完成；重复工具调用不重复准入，读取已完成结果不重跑，已派发但效果不明的操作返回 UNKNOWN。
+
+`qharness.run.create_loop_services()` 在已有 RunContext、ModelBackend、ToolExecutor 和 DatabaseManager 上装配调用服务。原独立模型及工具入口继续可用；Loop 请求关闭 SDK 内部重试，由角色调用服务逐次计量。`config/loop.example.toml` 配置 Loop，工具配置与 None 继承语义仍沿用 `tool.toml`。
+
+以下离线检查不需要模型 API Key，也不初始化系统沙箱：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe examples/15_loop_state.py
+.\.venv\Scripts\python.exe -X utf8 examples/16_loop_calls.py
+```
+
+累计 65 项离线测试通过。示例 15 展示三个完成边界，示例 16 使用测试替身演示角色调用、业务退出码保留、输出 Artifact 与重建服务后的结果读取。自动行动循环和完整任务控制器仍待后续批次；本批没有通过真实模型任务评估推理质量。
+
+数据库仍由应用级 DatabaseManager.initialize() 统一升级，新 revision 为 `0002_loop_ledger`。新增七张 Loop 表并保留工作区历史；已验证 SQLite 旧数据升级。工具返回的完整业务数据在 `ToolExecutionResult.data`，模型摘要在 `content`，持久输出引用在 `artifact_id`；外层 success 不代表 Shell 退出码为零。
+
 ## 当前目录
 
 ```text
@@ -143,9 +161,11 @@ src/qharness/resources/node/              托管 Node 下载地址、版本和�
 src/qharness/resources/srt/               固定版本 SRT 的 npm 清单与锁文件
 src/qharness/runtime/                     托管运行时清单、校验、安全安装与名称解析
 src/qharness/run/                         单次 Run 的租户、工作区、沙箱和取消上下文
+src/qharness/loop/                        推理契约、状态转换、角色调用、上下文与执行账本
 src/qharness/workspace/                   路径守卫、SQLAlchemy 台账、Dulwich 历史、补丁与回滚
 src/qharness/sandbox/                     统一沙箱接口与 Anthropic SRT 后端
 src/qharness/backends/base.py             Backend 抽象接口
 src/qharness/backends/openai_compatible.py OpenAI-compatible 实现
 examples/                                 可直接运行的 main 示例
+tests/                                    基于 unittest 的离线行为检查
 ```

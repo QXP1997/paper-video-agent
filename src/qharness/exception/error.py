@@ -12,6 +12,22 @@ class QHarnessError(Exception):
     """QHarness 所有业务异常的基类。"""
 
 
+class LoopTransitionError(QHarnessError, ValueError):
+    """推理状态转换违反阶段、身份、版本或任务契约约束。"""
+
+
+class LoopConfigurationError(QHarnessError, ValueError):
+    """Loop 配置或调用上下文不合法。"""
+
+
+class LoopExecutionError(QHarnessError, RuntimeError):
+    """Loop 调用失败，code 区分预算、身份冲突、协议错误及未知执行。"""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class ModelConfigurationError(QHarnessError, ValueError):
     """模型配置不完整或不合法。"""
 
