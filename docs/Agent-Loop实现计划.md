@@ -1,6 +1,6 @@
 # QHarness Agent Loop 实现计划
 
-> 状态：待实现；本计划不表示相关代码已完成  
+> 状态：批次 1 已实现并通过离线行为检查；批次 2—8 待实现<br>
 > 制定日期：2026-09-13  
 > 代码基线：HEAD `8ff37fe` 及当日工作区  
 > 设计依据：[Agent Loop 文献综述与 QHarness 设计建议](./Agent-Loop文献综述与QHarness设计建议.md)  
@@ -18,6 +18,8 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 本计划中的新增文件路径均为拟定位置；现有文件以当前仓库为准。实施时允许合并过薄的模块，但职责、接口与验收条件保持明确。
 
+**复用优先（2026-09-13 用户明确要求）：** 每批先检查现有实现；可以复用就直接复用，需要扩展时优先修改原有模块，只有现有职责确实无法承载时才新增代码。文件清单是职责建议，不是必须逐个新建文件的要求。不得平行重写模型消息协议、工具执行器、工作区管理、RunContext 或数据库基础设施。
+
 ## 2. 当前基础与复用位置
 
 | 已有部分 | 直接复用 | 本次需要扩展 |
@@ -29,7 +31,7 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 | [工作区修改服务](../src/qharness/workspace/mutation.py) | 操作历史、私有 Commit、冲突保护 | 从可信执行上下文接收稳定 operation_id，支持恢复核对 |
 | [应用数据库](../src/qharness/persistence/) | SQLAlchemy、SessionFactory、Alembic | 随功能增加 Run、模型/工具执行、Todo/Stage、验证等迁移 |
 
-当前没有统一 tests 目录或已配置的测试运行器。建议新增基于标准库 unittest 的行为测试，异步部分使用 IsolatedAsyncioTestCase，避免为了启动协议检查额外引入运行依赖。真实模型和系统沙箱检查单独标识，普通测试默认不访问模型服务，也不执行系统初始化。
+批次 1 已新增 tests 目录，使用标准库 unittest，异步部分使用 IsolatedAsyncioTestCase，没有增加测试运行依赖。真实模型和系统沙箱检查单独标识，普通测试默认不访问模型服务，也不执行系统初始化。
 
 ## 3. 八个实施批次
 
@@ -37,12 +39,12 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 **目的：** 先让核心对象和控制语义在代码中成立，为后续模型调用提供明确契约。
 
-- [ ] 定义 TaskContract、TodoPlan、Todo、StagePlan、StageOutcome、StageVerdict、ProgressDelta、FeedbackDecision。
-- [ ] 定义 RunState、Stage/Todo/Task 三层 scope、阶段/执行尝试身份与版本。
-- [ ] 校验 Todo 依赖、验收项引用、StagePlan.addresses、目标修订和状态转换。
-- [ ] 实现纯状态 reducer：阶段通过、Todo 通过、任务通过、重开、等待等事件各自推进对应状态。
-- [ ] 建立固定分页任务 Fixture、ScriptedModelBackend 和可控工具的测试支撑。
-- [ ] 明确模型输出边界使用 Pydantic 校验；运行依赖继续由 RunContext 提供，不序列化锁或协程。
+- [x] 定义 TaskContract、TodoPlan、Todo、StagePlan、StageOutcome、StageVerdict、ProgressDelta、FeedbackDecision。
+- [x] 定义 RunState、Stage/Todo/Task 三层 scope、阶段/执行尝试身份与版本。
+- [x] 校验 Todo 依赖、验收项引用、StagePlan.addresses、目标修订和状态转换。
+- [x] 实现纯状态 reducer：阶段通过、Todo 通过、任务通过、重开、等待等事件各自推进对应状态。
+- [x] 建立固定分页任务 Fixture、ScriptedModelBackend 和可控工具的测试支撑。
+- [x] 明确模型输出边界使用 Pydantic 校验；运行依赖继续由 RunContext 提供，不序列化锁或协程。
 
 主要位置：`loop/models.py`、`loop/transitions.py`、`tests/support/`、`tests/loop/test_transitions.py`。
 
@@ -193,11 +195,11 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 - 批次 5 完成：从用户目标到 Task 验收的推理主线已贯通。
 - 批次 8 完成：完整生产目标通过联调、故障检查与真实任务评测。
 
-## 5. 下一次编码直接从哪里开始
+## 5. 批次 1 交付与下一步
 
-建议下一次实现批次 1，具体交付以下内容：
+批次 1 已交付以下内容：
 
-| 拟新增位置 | 交付内容 |
+| 实际位置 | 交付内容 |
 |---|---|
 | `src/qharness/loop/__init__.py` | 导出明确的领域类型 |
 | `src/qharness/loop/models.py` | Task/Todo/Stage、结果、反馈与进度模型 |
@@ -206,14 +208,17 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 | `tests/support/workspaces.py` | 独立临时工作区 Fixture |
 | `tests/loop/test_models.py` | 非法依赖、错误引用、契约约束等行为检查 |
 | `tests/loop/test_transitions.py` | 三层完成、重新规划、重开与过期事件检查 |
+| `tests/loop/test_support.py` | 原有模型协议、生产工具执行器与工作区接口的接入检查 |
+| `examples/15_loop_state.py` | 离线展示 Stage PASS → Todo PASS → Task PASS 的不同状态 |
 
-测试包补充必要的 `__init__.py`，保证标准库发现方式可用。拟使用入口：
+测试包已补充必要的 `__init__.py`，保证标准库发现方式可用。运行入口：
 
 ~~~powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe examples/15_loop_state.py
 ~~~
 
-首批至少覆盖七条轨迹：
+首批覆盖以下七条主轨迹，以及检查重试、等待恢复、依赖失效等边界：
 
 1. 阶段 PASS，Todo 尚未完成。
 2. Todo PASS，Task 尚有其他要求。
@@ -223,7 +228,19 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 6. REPLAN_TODO 修订依赖并保留有效完成项。
 7. 旧版本结果或计划降级被拒绝。
 
-这些检查以固定事实为输入，不依赖模型 API Key，不运行真实用户工作区命令。完成首批后，后续组件就能围绕已经明确的契约和行为实现。
+这些检查以固定事实为输入，不依赖模型 API Key，不运行真实用户工作区命令。验收结果：34 项离线测试通过；示例依次输出 `planning`、`verifying_task`、`completed`。
+
+本批复用情况：ScriptedModelBackend 继承现有 ModelBackend 并直接使用 ChatRequest / ChatResponse / ChatStreamEvent；可控工具仅提供 Handler，通过现有 Tool / ToolRegistry / ToolExecutor 校验与执行；临时工作区直接构造 WorkspaceContext；业务异常扩展已有 exception 模块。新增生产模块仅承载原仓库尚无实现的推理契约与纯状态转换，未改写现有 RunContext 或执行基础设施。
+
+当前实现边界：
+
+- reducer 校验已提交反馈的转换是否合法，不负责生成路由、规划或模型判断。真实 Planner / Actor / Verifier 仍按后续批次实施。
+- `evidence_refs` 当前只校验引用及覆盖关系；真实检查、证据来源和代码/环境版本失效由批次 4 接入。未知依赖时，对 Todo 依赖及共享验收项保守重开。
+- TaskContract 在本批事件中不可修改。原地修订 Todo 不能改写 objective / acceptance_refs / done_when；重新分解可使用新 Todo ID，但必须保留原 Task 验收覆盖。这是结构约束，不能证明任意自然语言描述在语义上没有弱化，最终仍需任务级验证。
+- REPAIR 保留整个 StagePlan 并分配新 attempt_id；REPLAN_STAGE 保留阶段 ID、递增计划版本；INVESTIGATE / ADVANCE 的新阶段使用新 ID；RETRY_CHECK 留在当前尝试的验证阶段。等待恢复保留原阶段与尝试，终态运行不再接收推理事件。
+- 状态可 JSON 往返，但尚未接入持久仓储、数据库 CAS 或预算；纯 reducer 的版本检查不能替代数据库原子提交。
+
+**下一步为批次 2。** 先沿现有 ModelBackend 与 ToolExecutor 梳理调用链，再补角色输出校验、基础上下文和稳定执行身份；优先扩展已有模型、工具、工作区与 persistence 模块，确认缺少独立职责后才新增服务。批次 3 在此基础上实现真实的单阶段 Action Agent Loop。
 
 ## 6. 进度维护规则
 
