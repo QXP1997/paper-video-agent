@@ -85,27 +85,6 @@ def create_get_workspace_status_tool(service: WorkspaceMutationService) -> Tool:
     )
 
 
-def create_inspect_file_change_tool(
-    service: WorkspaceMutationService,
-) -> Tool:
-    """创建只读的文件变更详情查询工具。"""
-
-    def inspect_file_change(operation_id: str) -> dict[str, object]:
-        """返回历史操作的 Diff、版本和当前状态。"""
-
-        return service.inspect(operation_id).to_dict()
-
-    return Tool(
-        name="inspect_file_change",
-        description=(
-            "按 operation_id 查询一次工作区操作。数据库只提供 Commit 关联和"
-            "操作状态，文件列表、Blob 版本和 Diff 均从 Dulwich 实时计算。"
-        ),
-        parameters=FileOperationParameters,
-        handler=inspect_file_change,
-    )
-
-
 def create_rollback_file_change_tool(
     service: WorkspaceMutationService,
 ) -> Tool:

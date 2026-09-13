@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from qharness.tools.base import Tool
-from qharness.tools.builtin.run_process import create_run_process_tool
+from qharness.tools.builtin.run_command import create_run_command_tool
 from qharness.tools.providers.base import ToolProvider
 
 if TYPE_CHECKING:
@@ -30,4 +30,4 @@ class SandboxToolProvider(ToolProvider):
     async def load_tools(self) -> list[Tool]:
         """返回绑定到当前 Run 工作区和沙箱的工具。"""
 
-        return [create_run_process_tool(self.context)]
+        return [create_run_command_tool(self.context)]

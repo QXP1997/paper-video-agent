@@ -32,14 +32,23 @@ _SANDBOX_KEYS = {
     "filesystem",
     "network",
 }
-_SRT_KEYS = {"node_path", "package_path", "expected_version", "debug"}
+_SRT_KEYS = {
+    "python_path",
+    "node_path",
+    "package_path",
+    "expected_version",
+    "debug",
+}
 _FILESYSTEM_KEYS = {"allow_read", "deny_read", "allow_write", "deny_write"}
 _NETWORK_KEYS = {"allowed_domains", "denied_domains", "allow_local_binding"}
 
 
 @dataclass(frozen=True, slots=True)
 class SrtRuntimeConfig:
-    """定位并校验 Anthropic Sandbox Runtime npm 包。"""
+    """选择 Python、Node 和 Anthropic SRT 的托管或自定义来源。"""
+
+    # Python 自定义路径；None 表示使用 QHarness 托管 Python。
+    python_path: Path | None
 
     # Node.js 自定义路径；None 表示使用 QHarness 自动下载的托管 Node。
     node_path: Path | None
@@ -52,6 +61,7 @@ class SrtRuntimeConfig:
 
     # 是否开启 SRT 自身的调试日志，排查策略或启动问题时使用。
     debug: bool = False
+
 
 @dataclass(frozen=True, slots=True)
 class SandboxFilesystemConfig:
@@ -148,6 +158,11 @@ def load_sandbox_config(config_path: str | Path) -> SandboxConfig:
             "sandbox.srt",
         )
         node_text = read_optional_string(srt_raw, "node_path", "sandbox.srt")
+        python_text = read_optional_string(
+            srt_raw,
+            "python_path",
+            "sandbox.srt",
+        )
         expected_version = read_optional_string(
             srt_raw,
             "expected_version",
@@ -186,6 +201,11 @@ def load_sandbox_config(config_path: str | Path) -> SandboxConfig:
             ),
             runtime_directory=resolve_config_path(path, runtime_text),
             srt=SrtRuntimeConfig(
+                python_path=(
+                    resolve_config_path(path, python_text)
+                    if python_text is not None
+                    else None
+                ),
                 node_path=(
                     resolve_config_path(path, node_text)
                     if node_text is not None

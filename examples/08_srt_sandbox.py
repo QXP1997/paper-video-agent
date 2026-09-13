@@ -59,21 +59,13 @@ async def main() -> None:
         return
 
     request = SandboxExecutionRequest(
-        # Agent 只需要使用逻辑名称 python。沙箱后端会自动替换成当前平台
-        # 随 QHarness 分发的解释器路径，不会调用用户的 Anaconda 或系统 Python。
-        executable="python",
-        arguments=(
-            "-c",
-            (
-                "import json, sys; "
-                "sys.stdout.write("
-                "'你好，代码已经在 Anthropic SRT 沙箱中运行。\\n' + "
-                "'收到的参数：' + "
-                "json.dumps(sys.argv[1:], ensure_ascii=False) + '\\n')"
-            ),
-            "包含 空格",
-            "单引号'",
-            "符号&|<>$",
+        # Agent 直接提供完整 PowerShell 命令；python 裸名称由沙箱 PATH
+        # 解析为 QHarness 托管解释器，管道由 SRT 内部 Shell 处理。
+        command=(
+            "python -c \"import sys; "
+            "print('你好，代码已经在 Anthropic SRT 沙箱中运行。'); "
+            "print('参数数量：', len(sys.argv) - 1)\" "
+            "'包含 空格' '符号&|<>$' | Select-String 'Anthropic|参数'"
         ),
         cwd=".",
         timeout_seconds=30.0,

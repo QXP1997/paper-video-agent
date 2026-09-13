@@ -6,7 +6,13 @@ from __future__ import annotations
 import json
 import logging
 
-from _common import PROJECT_ROOT, SANDBOX_WORKSPACE_ROOT, run_example
+from _common import (
+    DATABASE_CONFIG_PATH,
+    HISTORY_CONFIG_PATH,
+    SANDBOX_WORKSPACE_ROOT,
+    run_example,
+)
+from qharness.persistence import DatabaseManager, load_database_config
 from qharness.tools import (
     FileMutationToolProvider,
     ToolExecutionRequest,
@@ -26,7 +32,6 @@ from qharness.workspace import (
 
 _LOGGER = logging.getLogger("qharness.examples.file_rollback_conflict")
 _DEMO_WORKSPACE = SANDBOX_WORKSPACE_ROOT / "file-conflict-demo"
-_HISTORY_CONFIG_PATH = PROJECT_ROOT / "config" / "history.example.toml"
 _DEMO_FILE = "conflict.txt"
 
 
@@ -35,11 +40,16 @@ async def main() -> None:
 
     _DEMO_WORKSPACE.mkdir(parents=True, exist_ok=True)
     workspace = WorkspaceContext(_DEMO_WORKSPACE)
-    history_config = load_workspace_history_config(_HISTORY_CONFIG_PATH)
-    history_repository = SqlAlchemyWorkspaceHistoryRepository.from_config(
-        history_config,
+    database_manager = DatabaseManager(
+        load_database_config(DATABASE_CONFIG_PATH)
+    )
+    database_manager.initialize()
+    history_config = load_workspace_history_config(HISTORY_CONFIG_PATH)
+    history_repository = SqlAlchemyWorkspaceHistoryRepository(
+        database_manager.session_factory,
         tenant_id="local-demo-tenant",
         workspace_id="file-conflict-demo",
+        local_root=database_manager.local_root,
     )
     version_store = DulwichFileVersionStore(
         history_config.storage_root,

@@ -12,8 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, Self, runtime_checkable
-from weakref import WeakSet
+from typing import Protocol, runtime_checkable
 
 from sqlalchemy import (
     DateTime,
@@ -23,17 +22,11 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    create_engine,
-    event,
-    inspect,
     select,
-    text,
     update,
 )
-from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import (
-    DeclarativeBase,
     Mapped,
     Session,
     mapped_column,
@@ -42,7 +35,7 @@ from sqlalchemy.orm import (
 )
 
 from qharness.exception import WorkspaceHistoryError
-from qharness.workspace.config import WorkspaceHistoryConfig
+from qharness.persistence import OrmBase
 from qharness.workspace.identity import (
     validate_history_identifier,
 )
@@ -51,15 +44,6 @@ from qharness.workspace.models import ChangeStatus
 
 _LOCKS_GUARD = threading.Lock()
 _WORKSPACE_LOCKS: dict[str, threading.RLock] = {}
-
-# 同一个 Harness 进程中的所有 Run 复用数据库 Engine 和连接池。键值使用配置
-# 摘要，既能区分不同数据库，也不会把数据库密码直接保存在缓存键中。
-_ENGINES_GUARD = threading.Lock()
-_ENGINES: dict[str, tuple[Engine, Path | None]] = {}
-
-# 一个 Engine 只初始化一次 ORM 表结构，避免多个 Run 并发执行 create_all。
-_SCHEMA_GUARD = threading.Lock()
-_INITIALIZED_ENGINES: WeakSet[Engine] = WeakSet()
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +97,7 @@ class WorkspaceHistoryRepository(Protocol):
     def begin_operation(
         self,
         *,
+        operation_id: str | None = None,
         run_id: str,
         tool_name: str,
         origin: str,
@@ -144,11 +129,7 @@ class WorkspaceHistoryRepository(Protocol):
         ...
 
 
-class _Base(DeclarativeBase):
-    """QHarness 工作区历史 ORM 模型基类。"""
-
-
-class _WorkspaceBindingRecord(_Base):
+class _WorkspaceBindingRecord(OrmBase):
     """租户工作区标识与真实目录之间的稳定绑定。"""
 
     __tablename__ = "workspace_bindings"
@@ -159,7 +140,7 @@ class _WorkspaceBindingRecord(_Base):
     workspace_root: Mapped[str] = mapped_column(Text, nullable=False)
 
 
-class _WorkspaceOperationRecord(_Base):
+class _WorkspaceOperationRecord(OrmBase):
     """一次文件工具、外部检查点或回滚操作。"""
 
     __tablename__ = "workspace_operations"
@@ -210,7 +191,7 @@ class _WorkspaceOperationRecord(_Base):
     )
 
 
-class _OperationFileRecord(_Base):
+class _OperationFileRecord(OrmBase):
     """操作涉及文件的轻量检索索引。"""
 
     __tablename__ = "workspace_operation_files"
@@ -231,48 +212,33 @@ class _OperationFileRecord(_Base):
 class SqlAlchemyWorkspaceHistoryRepository:
     """使用 SQLAlchemy 保存工作区操作台账。
 
-    本实现既可以连接 SQLite，也可以由服务端传入 PostgreSQL/MySQL Engine；
-    业务服务不接触连接、Session、连接池或 SQL 方言。
+    仓储只依赖应用级 SessionFactory，不创建 Engine、不读取数据库配置，也不
+    执行结构迁移。SQLite、PostgreSQL 和 MySQL 的选择由 DatabaseManager 负责。
     """
 
     def __init__(
         self,
-        engine: Engine,
+        session_factory: sessionmaker[Session],
         *,
         tenant_id: str,
         workspace_id: str,
         local_root: Path | None = None,
     ) -> None:
-        """绑定数据库 Engine 与逻辑工作区。"""
+        """绑定应用级 SessionFactory 与逻辑工作区。"""
 
         self.tenant_id = validate_history_identifier(tenant_id, "tenant_id")
         self.workspace_id = validate_history_identifier(
             workspace_id,
             "workspace_id",
         )
-        self._engine = engine
         self._local_root = local_root
-        self._session_factory = sessionmaker(
-            bind=self._engine,
-            expire_on_commit=False,
-        )
+        self._session_factory = session_factory
         lock_source = (
-            f"{self._engine.url.render_as_string(hide_password=True)}|"
+            f"{id(self._session_factory)}|"
             f"{self.tenant_id}|{self.workspace_id}"
         )
         lock_key = hashlib.sha256(lock_source.encode("utf-8")).hexdigest()
         self._lock = _workspace_lock(lock_key)
-        with _SCHEMA_GUARD:
-            if self._engine not in _INITIALIZED_ENGINES:
-                try:
-                    _Base.metadata.create_all(self._engine)
-                except SQLAlchemyError as error:
-                    raise WorkspaceHistoryError(
-                        "无法初始化工作区历史数据库。"
-                    ) from error
-                _INITIALIZED_ENGINES.add(self._engine)
-        if self._engine.dialect.name == "sqlite":
-            self._migrate_legacy_sqlite_tables()
 
     @property
     def local_root(self) -> Path | None:
@@ -311,6 +277,7 @@ class SqlAlchemyWorkspaceHistoryRepository:
     def begin_operation(
         self,
         *,
+        operation_id: str | None = None,
         run_id: str,
         tool_name: str,
         origin: str,
@@ -319,11 +286,12 @@ class SqlAlchemyWorkspaceHistoryRepository:
     ) -> str:
         """在修改前创建 pending 台账及文件路径索引。"""
 
-        operation_id = uuid.uuid4().hex
+        resolved_operation_id = operation_id or uuid.uuid4().hex
+        validate_history_identifier(resolved_operation_id, "operation_id")
         normalized_paths = tuple(dict.fromkeys(paths))
         with self._lock, self._session() as session:
             record = _WorkspaceOperationRecord(
-                operation_id=operation_id,
+                operation_id=resolved_operation_id,
                 tenant_id=self.tenant_id,
                 workspace_id=self.workspace_id,
                 run_id=validate_history_identifier(run_id, "run_id"),
@@ -338,7 +306,7 @@ class SqlAlchemyWorkspaceHistoryRepository:
             )
             session.add(record)
             session.commit()
-        return operation_id
+        return resolved_operation_id
 
     def complete_operation(self, operation_id: str, commit_id: str) -> None:
         """条件确认操作，并绑定 Dulwich Commit。"""
@@ -470,88 +438,6 @@ class SqlAlchemyWorkspaceHistoryRepository:
         finally:
             session.close()
 
-    @classmethod
-    def from_config(
-        cls,
-        config: WorkspaceHistoryConfig,
-        *,
-        tenant_id: str,
-        workspace_id: str,
-    ) -> Self:
-        """按照 SQLAlchemy URL 创建统一仓储，数据库切换不影响业务代码。
-
-        SQLite URL 会自动启用 WAL、外键与线程池连接参数；MySQL、PostgreSQL
-        等其他 URL 则直接交给对应 SQLAlchemy 方言和驱动。
-        """
-
-        engine, local_root = _engine_from_config(config)
-
-        repository = cls(
-            engine,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            local_root=local_root,
-        )
-        return repository
-
-    def _migrate_legacy_sqlite_tables(self) -> None:
-        """迁移早期 sqlite3 版本的操作摘要，旧 Diff 不再复制。
-
-        旧实现没有 Tree/Commit，因此旧操作只能保留审计字段和文件路径，不能
-        伪造为新的 Git 历史；新操作会完整写入 base_commit_id 和 commit_id。
-        """
-
-        table_names = set(inspect(self._engine).get_table_names())
-        if "operations" not in table_names:
-            return
-        try:
-            with self._engine.begin() as connection:
-                if "workspace_binding" in table_names:
-                    connection.execute(
-                        text(
-                            """
-                            INSERT OR IGNORE INTO workspace_bindings (
-                                tenant_id, workspace_id, root_digest, workspace_root
-                            )
-                            SELECT :tenant_id, :workspace_id,
-                                   root_digest, workspace_root
-                            FROM workspace_binding WHERE singleton = 1
-                            """
-                        ),
-                        {
-                            "tenant_id": self.tenant_id,
-                            "workspace_id": self.workspace_id,
-                        },
-                    )
-                connection.execute(
-                    text(
-                        """
-                        INSERT OR IGNORE INTO workspace_operations (
-                            operation_id, tenant_id, workspace_id, run_id,
-                            tool_name, origin, status, base_commit_id, commit_id,
-                            reverted_by_operation_id, error_message, created_at
-                        )
-                        SELECT operation_id, tenant_id, workspace_id, run_id,
-                               tool_name, 'legacy', status, NULL, NULL,
-                               reverted_by_operation_id, error_message, created_at
-                        FROM operations
-                        """
-                    )
-                )
-                if "file_changes" in table_names:
-                    connection.execute(
-                        text(
-                            """
-                            INSERT OR IGNORE INTO workspace_operation_files (
-                                operation_id, sequence, path
-                            )
-                            SELECT operation_id, sequence, path FROM file_changes
-                            """
-                        )
-                    )
-        except SQLAlchemyError as error:
-            raise WorkspaceHistoryError("旧版 SQLite 历史迁移失败。") from error
-
 
 def _workspace_lock(namespace: str) -> threading.RLock:
     """为同一进程内的每个逻辑工作区返回共享可重入锁。"""
@@ -562,65 +448,3 @@ def _workspace_lock(namespace: str) -> threading.RLock:
             lock = threading.RLock()
             _WORKSPACE_LOCKS[namespace] = lock
         return lock
-
-
-def _engine_from_config(
-    config: WorkspaceHistoryConfig,
-) -> tuple[Engine, Path | None]:
-    """按数据库配置返回进程级共享 Engine 与本地数据库目录。"""
-
-    cache_source = "|".join(
-        (
-            config.database_url,
-            str(config.echo),
-            str(config.pool_pre_ping),
-            str(config.pool_recycle_seconds),
-            str(config.sqlite_timeout_seconds),
-        )
-    )
-    cache_key = hashlib.sha256(cache_source.encode("utf-8")).hexdigest()
-    with _ENGINES_GUARD:
-        cached = _ENGINES.get(cache_key)
-        if cached is not None:
-            return cached
-
-        try:
-            url = make_url(config.database_url)
-            local_root: Path | None = None
-            connect_args: dict[str, object] = {}
-            if url.get_backend_name() == "sqlite":
-                connect_args = {
-                    "check_same_thread": False,
-                    "timeout": config.sqlite_timeout_seconds,
-                }
-                if url.database not in {None, "", ":memory:"}:
-                    database_path = Path(url.database).resolve(strict=False)
-                    database_path.parent.mkdir(parents=True, exist_ok=True)
-                    local_root = database_path.parent
-
-            engine = create_engine(
-                url,
-                connect_args=connect_args,
-                echo=config.echo,
-                pool_pre_ping=config.pool_pre_ping,
-                pool_recycle=config.pool_recycle_seconds,
-            )
-        except (ImportError, ModuleNotFoundError, SQLAlchemyError) as error:
-            raise WorkspaceHistoryError(
-                "无法创建历史数据库 Engine，请检查 SQLAlchemy URL 和数据库驱动。"
-            ) from error
-
-        if url.get_backend_name() == "sqlite":
-
-            @event.listens_for(engine, "connect")
-            def _configure_sqlite(connection: object, _: object) -> None:
-                """为每条 SQLite DB-API 连接启用外键并使用 WAL 日志。"""
-
-                cursor = connection.cursor()  # type: ignore[attr-defined]
-                cursor.execute("PRAGMA foreign_keys = ON")
-                cursor.execute("PRAGMA journal_mode = WAL")
-                cursor.close()
-
-        resolved = (engine, local_root)
-        _ENGINES[cache_key] = resolved
-        return resolved

@@ -13,8 +13,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src"
 CONFIG_PATH = PROJECT_ROOT / "config" / "model.toml"
+DATABASE_CONFIG_PATH = PROJECT_ROOT / "config" / "database.toml"
 TOOL_CONFIG_PATH = PROJECT_ROOT / "config" / "tool.toml"
 SANDBOX_CONFIG_PATH = PROJECT_ROOT / "config" / "sandbox.toml"
+HISTORY_CONFIG_PATH = PROJECT_ROOT / "config" / "history.toml"
 
 # 开发阶段由 QHarness 托管的默认工作区。项目源码、配置文件和运行时目录
 # 都位于该目录之外，避免沙箱目标进程获得整个 Harness 仓库的访问权限。
@@ -28,6 +30,7 @@ from qharness.backends import OpenAICompatibleBackend  # noqa: E402
 from qharness.logging import configure_logging  # noqa: E402
 from qharness.model.config import load_model_config  # noqa: E402
 from qharness.exception.error import (  # noqa: E402
+    DatabaseError,
     ModelBackendError,
     ModelConfigurationError,
     RuntimeManagerError,
@@ -76,6 +79,8 @@ def run_example(main_function: Callable[[], Awaitable[None]]) -> None:
         asyncio.run(main_function())
     except ModelConfigurationError as error:
         _LOGGER.error("配置错误：%s", error)
+    except DatabaseError as error:
+        _LOGGER.error("数据库错误：%s", error)
     except RuntimeManagerError as error:
         _LOGGER.error("托管运行时错误：%s", error)
     except ToolConfigurationError as error:

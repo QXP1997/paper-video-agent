@@ -6,7 +6,13 @@ from __future__ import annotations
 import json
 import logging
 
-from _common import PROJECT_ROOT, SANDBOX_WORKSPACE_ROOT, run_example
+from _common import (
+    DATABASE_CONFIG_PATH,
+    HISTORY_CONFIG_PATH,
+    SANDBOX_WORKSPACE_ROOT,
+    run_example,
+)
+from qharness.persistence import DatabaseManager, load_database_config
 from qharness.tools import (
     FileMutationToolProvider,
     ToolExecutionPolicy,
@@ -29,7 +35,6 @@ _LOGGER = logging.getLogger("qharness.examples.file_mutation_history")
 
 # 示例数据固定放在开发工作区中，不会修改 QHarness 项目源码。
 _DEMO_WORKSPACE = SANDBOX_WORKSPACE_ROOT / "file-mutation-demo"
-_HISTORY_CONFIG_PATH = PROJECT_ROOT / "config" / "history.example.toml"
 _DEMO_FILE = "hello.py"
 
 
@@ -38,11 +43,16 @@ async def main() -> None:
 
     _DEMO_WORKSPACE.mkdir(parents=True, exist_ok=True)
     workspace = WorkspaceContext(_DEMO_WORKSPACE)
-    history_config = load_workspace_history_config(_HISTORY_CONFIG_PATH)
-    history_repository = SqlAlchemyWorkspaceHistoryRepository.from_config(
-        history_config,
+    database_manager = DatabaseManager(
+        load_database_config(DATABASE_CONFIG_PATH)
+    )
+    database_manager.initialize()
+    history_config = load_workspace_history_config(HISTORY_CONFIG_PATH)
+    history_repository = SqlAlchemyWorkspaceHistoryRepository(
+        database_manager.session_factory,
         tenant_id="local-demo-tenant",
         workspace_id="file-mutation-demo",
+        local_root=database_manager.local_root,
     )
     version_store = DulwichFileVersionStore(
         history_config.storage_root,
@@ -107,15 +117,9 @@ async def main() -> None:
     replace_payload = json.loads(replace_result.content)
     replace_operation_id = replace_payload["operation_id"]
 
-    inspect_result = await executor.execute(
-        ToolExecutionRequest(
-            call_id="inspect-demo-change",
-            tool_name="inspect_file_change",
-            raw_arguments={"operation_id": replace_operation_id},
-        ),
-        state,
-    )
-    _LOGGER.info("历史查询结果：\n%s", inspect_result.to_model_content())
+    # 操作详情属于客户端审计能力，不再注册成模型工具；直接调用 Service。
+    inspect_result = mutation_service.inspect(replace_operation_id)
+    _LOGGER.info("历史查询结果：\n%s", inspect_result.to_dict())
 
     rollback_result = await executor.execute(
         ToolExecutionRequest(
@@ -127,17 +131,10 @@ async def main() -> None:
     )
     _LOGGER.info("回滚结果：\n%s", rollback_result.to_model_content())
 
-    original_after_rollback = await executor.execute(
-        ToolExecutionRequest(
-            call_id="inspect-original-after-rollback",
-            tool_name="inspect_file_change",
-            raw_arguments={"operation_id": replace_operation_id},
-        ),
-        state,
-    )
+    original_after_rollback = mutation_service.inspect(replace_operation_id)
     _LOGGER.info(
         "原操作回滚后的状态：\n%s",
-        original_after_rollback.to_model_content(),
+        original_after_rollback.to_dict(),
     )
 
 

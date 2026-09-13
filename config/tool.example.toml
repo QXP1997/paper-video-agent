@@ -31,7 +31,7 @@ timeout_seconds = 5.0
 max_result_chars = 10000
 
 # 沙箱进程工具的限制完全由执行策略提供，工具 Handler 内不保存这些数值。
-[tool_execution.tools.run_process]
+[tool_execution.tools.run_command]
 max_calls = 10
 timeout_seconds = 90.0
 max_concurrency = 2

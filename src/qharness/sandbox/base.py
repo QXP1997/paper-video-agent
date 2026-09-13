@@ -13,13 +13,10 @@ from qharness.exception import SandboxExecutionError
 
 @dataclass(frozen=True, slots=True)
 class SandboxExecutionRequest:
-    """描述一次不经过宿主 Shell 拼接的沙箱进程调用。"""
+    """描述一次由 SRT 内部 Shell 执行的完整命令。"""
 
-    # 要启动的程序名称或绝对路径，例如 python、git 或 python.exe。
-    executable: str
-
-    # 直接传给目标程序的参数；每一项都是独立 argv，不经过宿主 Shell 拼接。
-    arguments: tuple[str, ...] = ()
+    # 模型生成的完整 Shell 命令，允许使用管道、重定向、变量和条件执行。
+    command: str
 
     # 目标进程的工作目录，只允许填写当前 WorkspaceContext 内的路径。
     cwd: str | Path = "."
@@ -50,19 +47,12 @@ class SandboxExecutionRequest:
     )
 
     def __post_init__(self) -> None:
-        """尽早拒绝会破坏 argv 边界或执行限制的非法输入。"""
+        """尽早拒绝无效命令或执行限制。"""
 
-        if not isinstance(self.executable, str) or not self.executable.strip():
-            raise SandboxExecutionError("沙箱可执行文件名称不能为空。")
-        if "\x00" in self.executable:
-            raise SandboxExecutionError("沙箱可执行文件名称不能包含空字符。")
-        if not isinstance(self.arguments, tuple):
-            raise SandboxExecutionError("arguments 必须是字符串元组。")
-        for argument in self.arguments:
-            if not isinstance(argument, str) or "\x00" in argument:
-                raise SandboxExecutionError(
-                    "每个沙箱命令参数都必须是不含空字符的字符串。"
-                )
+        if not isinstance(self.command, str) or not self.command.strip():
+            raise SandboxExecutionError("沙箱命令不能为空。")
+        if "\x00" in self.command:
+            raise SandboxExecutionError("沙箱命令不能包含空字符。")
         _validate_optional_positive_number(
             self.timeout_seconds,
             "timeout_seconds",
@@ -198,7 +188,7 @@ class SandboxBackend(ABC):
         self,
         request: SandboxExecutionRequest,
     ) -> SandboxExecutionResult:
-        """在沙箱内执行一个 argv 进程，并收集受限输出。"""
+        """在沙箱 Shell 内执行完整命令，并收集受限输出。"""
 
 
 def _validate_optional_positive_number(

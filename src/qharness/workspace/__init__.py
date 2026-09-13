@@ -12,7 +12,10 @@ from qharness.workspace.history import (
     WorkspaceHistoryRepository,
 )
 from qharness.workspace.models import ChangeStatus, FileChange, FileMutationResult
-from qharness.workspace.mutation import WorkspaceMutationService
+from qharness.workspace.mutation import (
+    ExternalMutationToken,
+    WorkspaceMutationService,
+)
 from qharness.workspace.path_guard import WorkspacePathGuard
 from qharness.workspace.version import (
     DulwichFileVersionStore,
@@ -25,6 +28,7 @@ from qharness.workspace.version import (
 __all__ = [
     "ChangeStatus",
     "DulwichFileVersionStore",
+    "ExternalMutationToken",
     "FileChange",
     "FileHistoryEntry",
     "FileMutationResult",

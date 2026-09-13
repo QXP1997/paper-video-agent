@@ -8,6 +8,7 @@ import os
 import stat
 import tempfile
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from qharness.workspace.version import (
 
 _LOCKS_GUARD = threading.Lock()
 _MUTATION_LOCKS: dict[str, threading.RLock] = {}
+_ACTIVE_EXTERNAL_OPERATIONS: dict[str, str] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +54,20 @@ class _PlannedFileChange:
     file_path: Path
     before: _FileSnapshot
     after: _FileSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalMutationToken:
+    """标识一个正在沙箱中运行、可能修改工作区的外部命令。"""
+
+    # 同时作为命令产生文件变更时的 operation_id。
+    operation_id: str
+
+    # 记录操作来源的模型工具名称，当前通常为 run_command。
+    tool_name: str
+
+    # 命令启动前已经保存好的私有历史 HEAD。
+    base_commit_id: str
 
 
 class WorkspaceMutationService:
@@ -89,6 +105,7 @@ class WorkspaceMutationService:
         self.run_id = run_id
         self.max_file_bytes = max_file_bytes
         self.history_repository.bind_workspace_root(self.workspace.root)
+        self._mutation_key = _workspace_mutation_key(self.workspace.root)
         self._mutation_lock = _workspace_mutation_lock(self.workspace.root)
 
     def write_text(
@@ -107,6 +124,7 @@ class WorkspaceMutationService:
         self._validate_content_size(encoded_content)
 
         with self._mutation_lock:
+            self._ensure_no_external_operation()
             base_commit_id = self._checkpoint_external_changes()
             file_path, relative_path = self._resolve_writable_file(path)
             self._validate_trackable_path(relative_path)
@@ -147,6 +165,7 @@ class WorkspaceMutationService:
             raise WorkspaceMutationError("expected_replacements 必须大于 0。")
 
         with self._mutation_lock:
+            self._ensure_no_external_operation()
             base_commit_id = self._checkpoint_external_changes()
             file_path = self.workspace.resolve_file(path)
             relative_path = self.workspace.relative_path(file_path)
@@ -178,6 +197,7 @@ class WorkspaceMutationService:
 
         patch_files = parse_patch(patch_text)
         with self._mutation_lock:
+            self._ensure_no_external_operation()
             base_commit_id = self._checkpoint_external_changes()
             plans: list[_PlannedFileChange] = []
             resolved_paths: set[str] = set()
@@ -261,10 +281,93 @@ class WorkspaceMutationService:
         with self._mutation_lock:
             return self.version_store.workspace_status(self.workspace.root)
 
+    def begin_external_operation(self, tool_name: str) -> ExternalMutationToken:
+        """保存命令执行前基线，并阻止其他 Harness 写操作并发进入。"""
+
+        with self._mutation_lock:
+            self._ensure_no_external_operation()
+            base_commit_id = self._checkpoint_external_changes()
+            token = ExternalMutationToken(
+                operation_id=uuid.uuid4().hex,
+                tool_name=tool_name,
+                base_commit_id=base_commit_id,
+            )
+            _ACTIVE_EXTERNAL_OPERATIONS[self._mutation_key] = token.operation_id
+            return token
+
+    def finish_external_operation(
+        self,
+        token: ExternalMutationToken,
+        *,
+        command_succeeded: bool,
+    ) -> FileMutationResult:
+        """把沙箱命令落盘的全部可跟踪变化保存为一个 Commit。"""
+
+        with self._mutation_lock:
+            active_id = _ACTIVE_EXTERNAL_OPERATIONS.get(self._mutation_key)
+            if active_id != token.operation_id:
+                raise WorkspaceConflictError("外部命令操作令牌已经失效。")
+            try:
+                current_head = self.version_store.head_commit_id()
+                if current_head != token.base_commit_id:
+                    raise WorkspaceConflictError(
+                        "命令执行期间私有历史 HEAD 被其他操作推进，"
+                        "无法安全归属本次文件变化。"
+                    )
+                commit_result = self.version_store.checkpoint_workspace(
+                    self.workspace.root,
+                    message=(
+                        f"QHarness {token.tool_name} "
+                        f"operation={token.operation_id}"
+                    ),
+                )
+                validation_status = (
+                    "passed" if command_succeeded else "failed"
+                )
+                if not commit_result.created or not commit_result.files:
+                    return FileMutationResult(
+                        operation_id=None,
+                        tool_name=token.tool_name,
+                        status=ChangeStatus.APPLIED,
+                        files=(),
+                        base_commit_id=token.base_commit_id,
+                        commit_id=token.base_commit_id,
+                        validation_status=validation_status,
+                    )
+
+                operation_id = self.history_repository.begin_operation(
+                    operation_id=token.operation_id,
+                    run_id=self.run_id,
+                    tool_name=token.tool_name,
+                    origin="agent",
+                    paths=tuple(change.path for change in commit_result.files),
+                    base_commit_id=token.base_commit_id,
+                )
+                self.history_repository.complete_operation(
+                    operation_id,
+                    commit_result.commit_id,
+                )
+                return FileMutationResult(
+                    operation_id=operation_id,
+                    tool_name=token.tool_name,
+                    status=ChangeStatus.APPLIED,
+                    files=commit_result.files,
+                    base_commit_id=token.base_commit_id,
+                    commit_id=commit_result.commit_id,
+                    validation_status=validation_status,
+                )
+            finally:
+                if (
+                    _ACTIVE_EXTERNAL_OPERATIONS.get(self._mutation_key)
+                    == token.operation_id
+                ):
+                    del _ACTIVE_EXTERNAL_OPERATIONS[self._mutation_key]
+
     def rollback(self, operation_id: str) -> FileMutationResult:
         """反向应用某次 Commit 的文件变化，保留之后的无关修改。"""
 
         with self._mutation_lock:
+            self._ensure_no_external_operation()
             current_head = self._checkpoint_external_changes()
             operation = self.history_repository.get_operation(operation_id)
             if operation.status is not ChangeStatus.APPLIED:
@@ -336,6 +439,14 @@ class WorkspaceMutationService:
             )
             self.history_repository.complete_operation(operation_id, result.commit_id)
         return result.commit_id
+
+    def _ensure_no_external_operation(self) -> None:
+        """拒绝与正在执行的沙箱命令交错修改同一个工作区。"""
+
+        if self._mutation_key in _ACTIVE_EXTERNAL_OPERATIONS:
+            raise WorkspaceConflictError(
+                "当前工作区有沙箱命令正在执行，请等待命令结束后再修改文件。"
+            )
 
     def _apply_plans(
         self,
@@ -573,10 +684,16 @@ class WorkspaceMutationService:
 def _workspace_mutation_lock(workspace_root: Path) -> threading.RLock:
     """按规范化工作区根目录复用进程内修改锁。"""
 
-    lock_key = os.path.normcase(str(workspace_root.resolve(strict=True)))
+    lock_key = _workspace_mutation_key(workspace_root)
     with _LOCKS_GUARD:
         lock = _MUTATION_LOCKS.get(lock_key)
         if lock is None:
             lock = threading.RLock()
             _MUTATION_LOCKS[lock_key] = lock
         return lock
+
+
+def _workspace_mutation_key(workspace_root: Path) -> str:
+    """返回同一进程识别工作区并发边界的规范化键。"""
+
+    return os.path.normcase(str(workspace_root.resolve(strict=True)))

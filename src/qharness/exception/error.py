@@ -82,7 +82,19 @@ class WorkspaceHistoryError(WorkspaceMutationError):
 
 
 class WorkspaceHistoryConfigurationError(WorkspaceHistoryError, ValueError):
-    """工作区历史数据库 URL 或本地版本目录配置不合法。"""
+    """工作区私有版本目录配置不合法。"""
+
+
+class DatabaseError(QHarnessError):
+    """数据库连接、会话或结构迁移失败时使用的异常基类。"""
+
+
+class DatabaseConfigurationError(DatabaseError, ValueError):
+    """全局数据库 URL 或连接池配置不合法。"""
+
+
+class DatabaseMigrationError(DatabaseError):
+    """应用数据库结构初始化或版本迁移失败。"""
 
 
 class RuntimeManagerError(QHarnessError):

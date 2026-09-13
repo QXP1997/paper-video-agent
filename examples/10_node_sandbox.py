@@ -54,15 +54,12 @@ async def main() -> None:
 
     result = await sandbox.execute(
         SandboxExecutionRequest(
-            # 逻辑名称 node 会被解析为 QHarness 托管 Node 的绝对路径。
-            executable="node",
-            arguments=(
-                "-e",
-                (
-                    "const payload = {runtime: process.version, sandbox: true};"
-                    "process.stdout.write('你好，JavaScript 已在 SRT 中运行。\\n' + "
-                    "JSON.stringify(payload) + '\\n');"
-                ),
+            # node 裸名称由 QHarness 注入的沙箱 PATH 解析为托管 Node。
+            command=(
+                "node -e \"const payload = "
+                "{runtime: process.version, sandbox: true}; "
+                "process.stdout.write('你好，JavaScript 已在 SRT 中运行。\\n' "
+                "+ JSON.stringify(payload) + '\\n');\""
             ),
             cwd=".",
             timeout_seconds=30.0,

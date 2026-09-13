@@ -10,6 +10,8 @@ max_stderr_chars = 100000
 runtime_directory = "../.qharness/runtime/sandbox"
 
 [sandbox.srt]
+# 未配置 python_path 时使用 QHarness 托管 Python；显式配置后不可用会报错。
+# python_path = "C:/Users/用户名/anaconda3/python.exe"
 # 未配置 node_path 时自动下载并使用 QHarness 托管 Node；只有用户明确选择
 # 自定义 Node 时才填写路径，不可用时不会静默回退。
 # node_path = "C:/Program Files/nodejs/node.exe"

@@ -1,26 +1,6 @@
-# QHarness 工作区历史配置模板。
+# QHarness Dulwich 工作区历史配置模板。
 # 相对路径均相对于本配置文件所在目录，不受程序启动目录影响。
 
-[history]
+[workspace_history]
 # Dulwich 私有仓库的宿主目录；每个租户工作区使用独立摘要子目录。
 storage_root = "../.qharness/history"
-
-[history.database]
-# SQLAlchemy URL 决定数据库类型。SQLite 桌面端只使用一个数据库文件，
-# tenant_id 与 workspace_id 在表内完成逻辑隔离。
-url = "sqlite+pysqlite:///../.qharness/history/history.sqlite3"
-
-# 切换 MySQL 时只需替换上面的 url；QHarness 业务代码无需修改。
-# url = "mysql+pymysql://qharness:password@127.0.0.1:3306/qharness?charset=utf8mb4"
-
-# 是否输出 SQL 语句；生产环境建议保持 false。
-echo = false
-
-# 取出池连接时先检查连接，适合长期运行的 Harness 进程。
-pool_pre_ping = true
-
-# 连接在池中存活超过该秒数后回收，避免 MySQL 空闲连接失效。
-pool_recycle_seconds = 1800
-
-# 仅 SQLite 使用：等待数据库文件锁的最长秒数。
-sqlite_timeout_seconds = 30.0

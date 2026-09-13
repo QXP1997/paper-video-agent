@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from qharness.persistence import DatabaseManager
 from qharness.run.context import RunContext
 from qharness.runtime import RuntimeManager
 from qharness.sandbox.config import SandboxConfig
@@ -28,6 +29,7 @@ def create_run_context(
     workspace_root: str | Path,
     sandbox_config: SandboxConfig,
     runtime_manager: RuntimeManager | None = None,
+    database_manager: DatabaseManager | None = None,
     history_config: WorkspaceHistoryConfig | None = None,
     history_repository: WorkspaceHistoryRepository | None = None,
     version_store: FileVersionStore | None = None,
@@ -36,8 +38,8 @@ def create_run_context(
 
     ``workspace_root`` 必须由客户端或服务端在完成租户授权后传入。本函数只
     建立运行边界，不根据 tenant_id 拼接或推断目录，避免标识被当成路径。
-    传入 ``history_config`` 时还会创建文件变更服务；数据库类型完全由
-    SQLAlchemy URL 决定，Dulwich 存储目录由同一配置动态提供。
+    传入 ``history_config`` 时还会创建文件变更服务。应用级数据库由
+    ``database_manager`` 统一管理，Dulwich 存储目录由历史配置提供。
     """
 
     workspace = WorkspaceContext(workspace_root)
@@ -52,14 +54,19 @@ def create_run_context(
         )
     if history_config is not None and history_repository is not None:
         raise ValueError("history_config 与自定义历史存储不能同时提供。")
+    if history_config is not None and database_manager is None:
+        raise ValueError("启用工作区历史时必须提供 database_manager。")
 
     resolved_repository = history_repository
     resolved_version_store = version_store
     if history_config is not None:
-        resolved_repository = SqlAlchemyWorkspaceHistoryRepository.from_config(
-            history_config,
+        assert database_manager is not None
+        database_manager.initialize()
+        resolved_repository = SqlAlchemyWorkspaceHistoryRepository(
+            database_manager.session_factory,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
+            local_root=database_manager.local_root,
         )
         resolved_version_store = DulwichFileVersionStore(
             history_config.storage_root,

@@ -14,6 +14,7 @@ dist/
 .env
 .env.*
 config/model.toml
+config/database.toml
 config/tool.toml
 config/sandbox.toml
 config/history.toml

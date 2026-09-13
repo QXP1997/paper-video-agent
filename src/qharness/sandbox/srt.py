@@ -101,9 +101,16 @@ class SrtSandboxBackend(SandboxBackend):
             )
 
     async def prepare(self) -> SandboxStatus:
-        """自动准备托管 Node 和 SRT npm 包，并返回最新只读状态。"""
+        """自动准备托管 Python、Node 和 SRT，并返回最新只读状态。"""
 
         try:
+            if self._config.srt.python_path is None:
+                await asyncio.to_thread(
+                    self._runtime_manager.ensure,
+                    RuntimeName.PYTHON,
+                )
+            else:
+                self._resolve_python_path()
             if self._config.srt.node_path is None:
                 node_path = await asyncio.to_thread(
                     self._runtime_manager.ensure,
@@ -207,10 +214,10 @@ class SrtSandboxBackend(SandboxBackend):
         """
 
         _LOGGER.info(
-            "SRT 执行开始：run_id=%s，operation_id=%s，executable=%s，cwd=%s",
+            "SRT 执行开始：run_id=%s，operation_id=%s，command_chars=%s，cwd=%s",
             request.run_id or "-",
             request.operation_id or "-",
-            request.executable,
+            len(request.command),
             request.cwd,
         )
 
@@ -224,31 +231,29 @@ class SrtSandboxBackend(SandboxBackend):
                 setup_command=status.setup_command,
             )
 
-        # 第二步：把工作目录限制在当前工作区，并将 python 等逻辑名称解析为
-        # QHarness 自带运行时。首次使用时的摘要校验和解压放到工作线程执行，
-        # 避免阻塞 asyncio 事件循环。
+        # 第二步：把工作目录限制在当前工作区，并构造托管运行时优先的 PATH。
+        # 模型命令中的 python/node 保持原样，由沙箱内部 Shell 按 PATH 解析。
         cwd = self._workspace.resolve_directory(request.cwd)
-        try:
-            executable = await asyncio.to_thread(
-                self._resolve_target_executable,
-                request.executable,
-            )
-        except RuntimeManagerError as error:
-            raise SandboxConfigurationError(
-                f"无法准备沙箱目标运行时：{error}"
-            ) from error
-        settings_path = self._write_settings_file()
+        python_path = self._resolve_python_path()
         node_path = self._resolve_node_path()
+        execution_environment = self._build_execution_environment(
+            python_path,
+            node_path,
+        )
+        settings_path = self._write_settings_file(
+            additional_read_paths=(python_path.parent, node_path.parent)
+        )
         _LOGGER.debug(
-            "SRT 执行环境已解析：workspace=%s，settings=%s，node=%s",
+            "SRT 执行环境已解析：workspace=%s，settings=%s，python=%s，node=%s",
             self._workspace.root,
             settings_path,
+            python_path,
             node_path,
         )
 
-        # 第三步：组装 SRT CLI 参数。Linux/macOS 使用位置参数模式；Windows
-        # 的 SRT 0.0.74 会用 POSIX 单引号重组位置参数，导致 cmd.exe 把引号
-        # 当作文件名的一部分，因此改用 SRT 的原始命令字符串模式。
+        # 第三步：使用 SRT 原生 ``-c`` 命令字符串模式。Windows 版 SRT 默认
+        # 使用 cmd.exe，因此外层固定启动 PowerShell；Linux/macOS 直接由 SRT
+        # 默认 Bash 解释模型命令。QHarness 不解析管道、重定向或变量语法。
         command = [
             str(node_path),
             str(self._resolve_package_path() / "dist" / "cli.js"),
@@ -258,12 +263,9 @@ class SrtSandboxBackend(SandboxBackend):
         if self._config.srt.debug:
             command.append("--debug")
         if os.name == "nt":
-            command.extend(
-                ("-c", _build_windows_sandbox_command(request, executable))
-            )
+            command.extend(("-c", _build_windows_sandbox_command(request.command)))
         else:
-            # “--”表示其后内容全部属于目标程序，防止被 SRT 当成自身参数。
-            command.extend(("--", executable, *request.arguments))
+            command.extend(("-c", request.command))
 
         # 第四步：让 SRT CLI 拥有独立进程组。它不负责沙箱隔离，只用于
         # 超时或取消时从最外层 PID 开始清理 SRT、Python 及其所有后代进程。
@@ -283,6 +285,7 @@ class SrtSandboxBackend(SandboxBackend):
                 ),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=execution_environment,
                 creationflags=creationflags,
                 start_new_session=start_new_session,
             )
@@ -422,11 +425,31 @@ class SrtSandboxBackend(SandboxBackend):
         # SRT debug 会把完整目标命令（可能包含密钥）写入 stderr。实时日志和
         # 返回结果都执行相同脱敏，避免上层把原文再次落盘。
         stderr = _redact_srt_debug_commands(stderr)
-        await asyncio.gather(stdin_task, return_exceptions=True)
+        await asyncio.gather(
+            stdin_task,
+            output_task,
+            *([cancellation_task] if cancellation_task is not None else []),
+            return_exceptions=True,
+        )
+        execution_succeeded = (
+            process.returncode == 0
+            and not timed_out
+            and not cancelled
+            and not stdout_truncated
+            and not stderr_truncated
+        )
+        # SRT 把自身 DEBUG 日志与目标程序 stderr 写入同一条管道，无法可靠
+        # 拆分。成功时这些诊断已经实时进入 QHarness 日志，不再回填给模型，
+        # 避免浪费上下文；失败时保留完整内容，帮助模型定位命令或沙箱问题。
+        result_stderr = (
+            ""
+            if self._config.srt.debug and execution_succeeded
+            else stderr
+        )
         result = SandboxExecutionResult(
             exit_code=process.returncode,
             stdout=stdout,
-            stderr=stderr,
+            stderr=result_stderr,
             duration_seconds=time.monotonic() - started_at,
             timed_out=timed_out,
             cancelled=cancelled,
@@ -513,14 +536,40 @@ class SrtSandboxBackend(SandboxBackend):
             )
         return status.executable_path
 
-    def _resolve_target_executable(self, executable: str) -> str:
-        """解析沙箱目标程序，并让用户明确选择的 Node 同时作用于 JS。"""
+    def _resolve_python_path(self) -> Path:
+        """优先使用用户配置路径，否则使用 QHarness 托管 Python。"""
 
-        is_bare_name = "/" not in executable and "\\" not in executable
-        is_node = executable.casefold() in {"node", "node.exe"}
-        if is_bare_name and is_node and self._config.srt.node_path is not None:
-            return str(self._resolve_node_path())
-        return self._runtime_manager.resolve_executable(executable)
+        configured = self._config.srt.python_path
+        if configured is not None:
+            if not configured.is_file():
+                raise SandboxConfigurationError(
+                    f"Python 可执行文件不存在：{configured}"
+                )
+            return configured
+        status = self._runtime_manager.check_status(RuntimeName.PYTHON)
+        if not status.available or status.executable_path is None:
+            raise SandboxConfigurationError(
+                "QHarness 托管 Python 尚未准备完成，请先调用 sandbox.prepare()："
+                f"{status.message}"
+            )
+        return status.executable_path
+
+    @staticmethod
+    def _build_execution_environment(
+        python_path: Path,
+        node_path: Path,
+    ) -> dict[str, str]:
+        """构造传给 SRT 的环境，使裸 python/node 优先命中选定运行时。"""
+
+        environment = dict(os.environ)
+        runtime_directories = [str(python_path.parent), str(node_path.parent)]
+        existing_path = environment.get("PATH", "")
+        if existing_path:
+            runtime_directories.append(existing_path)
+        environment["PATH"] = os.pathsep.join(runtime_directories)
+        environment["PYTHONUTF8"] = "1"
+        environment["PYTHONIOENCODING"] = "utf-8"
+        return environment
 
     async def _check_node_version(self, node_path: Path) -> None:
         """确认 Node.js 满足 SRT npm 包声明的最低版本。"""
@@ -662,13 +711,22 @@ class SrtSandboxBackend(SandboxBackend):
             )
         return helper
 
-    def _write_settings_file(self) -> Path:
+    def _write_settings_file(
+        self,
+        *,
+        additional_read_paths: tuple[Path, ...] = (),
+    ) -> Path:
         """生成仅含非密钥策略的 SRT JSON，并以内容摘要稳定命名。"""
 
         filesystem = self._config.filesystem
+        allow_read = self._resolve_policy_paths(filesystem.allow_read)
+        allow_read.extend(
+            str(path.resolve(strict=False)) for path in additional_read_paths
+        )
+        allow_read = list(dict.fromkeys(allow_read))
         settings: dict[str, Any] = {
             "filesystem": {
-                "allowRead": self._resolve_policy_paths(filesystem.allow_read),
+                "allowRead": allow_read,
                 "denyRead": self._resolve_policy_paths(filesystem.deny_read),
                 "allowWrite": self._resolve_policy_paths(filesystem.allow_write),
                 "denyWrite": self._resolve_policy_paths(filesystem.deny_write),
@@ -760,22 +818,17 @@ def _process_group_options() -> tuple[int, bool]:
     return 0, True
 
 
-def _build_windows_sandbox_command(
-    request: SandboxExecutionRequest,
-    executable: str,
-) -> str:
-    """把目标 argv 编码为仅在 Windows 沙箱内部解析的 PowerShell 命令。
+def _build_windows_sandbox_command(command: str) -> str:
+    """把模型命令编码为仅在 Windows SRT 内部解析的 PowerShell 脚本。
 
     SRT CLI 的 ``-c`` 最终由沙箱账户下的 cmd.exe 执行。这里只向 cmd.exe
-    传递固定的 PowerShell 启动参数和 Base64 文本；实际 executable 与每个
-    argument 都保留为独立的 PowerShell 单引号字面量，不会在宿主 Shell 中
-    解析，也不会因空格或 ``&|<>$`` 等字符改变命令边界。
+    传递固定的 PowerShell 启动参数和 Base64 文本。模型命令本身作为完整的
+    PowerShell 脚本运行，管道、重定向、变量和条件语法均不会被 QHarness 改写。
     """
 
-    argv = (executable, *request.arguments)
-    invocation = "& " + " ".join(_powershell_literal(item) for item in argv)
     script = (
         "$ErrorActionPreference = 'Stop'\n"
+        "$ProgressPreference = 'SilentlyContinue'\n"
         # Windows 中文系统默认可能使用 GBK。QHarness 的跨平台输出协议统一为
         # UTF-8，因此必须在目标进程启动前同步控制台、PowerShell 管道和
         # Python 标准流编码，避免字节进入异步读取器后才被错误解码。
@@ -785,21 +838,20 @@ def _build_windows_sandbox_command(
         "$OutputEncoding = $utf8\n"
         "$env:PYTHONUTF8 = '1'\n"
         "$env:PYTHONIOENCODING = 'utf-8'\n"
-        f"{invocation}\n"
-        "if ($null -eq $LASTEXITCODE) { exit 0 }\n"
-        "exit $LASTEXITCODE\n"
+        f"{command}\n"
+        # PowerShell 的 $LASTEXITCODE 只记录最近一次原生进程，后续成功的
+        # Cmdlet 不会清空它。因此先保存代表最后一条语句的 $?，避免把已经
+        # 恢复成功的命令错误地判定为失败。
+        "$qharnessCommandSucceeded = $?\n"
+        "if ($qharnessCommandSucceeded) { exit 0 }\n"
+        "if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }\n"
+        "exit 1\n"
     )
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     return (
         "powershell.exe -NoLogo -NoProfile -NonInteractive "
         f"-EncodedCommand {encoded}"
     )
-
-
-def _powershell_literal(value: str) -> str:
-    """返回不会执行变量展开或元字符解析的 PowerShell 字符串字面量。"""
-
-    return "'" + value.replace("'", "''") + "'"
 
 
 async def _read_limited_stream(

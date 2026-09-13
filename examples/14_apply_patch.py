@@ -6,7 +6,13 @@ from __future__ import annotations
 import json
 import logging
 
-from _common import PROJECT_ROOT, SANDBOX_WORKSPACE_ROOT, run_example
+from _common import (
+    DATABASE_CONFIG_PATH,
+    HISTORY_CONFIG_PATH,
+    SANDBOX_WORKSPACE_ROOT,
+    run_example,
+)
+from qharness.persistence import DatabaseManager, load_database_config
 from qharness.tools import (
     FileMutationToolProvider,
     ToolExecutionPolicy,
@@ -27,7 +33,6 @@ from qharness.workspace import (
 
 _LOGGER = logging.getLogger("qharness.examples.apply_patch")
 _DEMO_WORKSPACE = SANDBOX_WORKSPACE_ROOT / "apply-patch-demo"
-_HISTORY_CONFIG_PATH = PROJECT_ROOT / "config" / "history.example.toml"
 
 
 async def main() -> None:
@@ -45,11 +50,16 @@ async def main() -> None:
     added_file.unlink(missing_ok=True)
 
     workspace = WorkspaceContext(_DEMO_WORKSPACE)
-    history_config = load_workspace_history_config(_HISTORY_CONFIG_PATH)
-    history_repository = SqlAlchemyWorkspaceHistoryRepository.from_config(
-        history_config,
+    database_manager = DatabaseManager(
+        load_database_config(DATABASE_CONFIG_PATH)
+    )
+    database_manager.initialize()
+    history_config = load_workspace_history_config(HISTORY_CONFIG_PATH)
+    history_repository = SqlAlchemyWorkspaceHistoryRepository(
+        database_manager.session_factory,
         tenant_id="local-demo-tenant",
         workspace_id="apply-patch-demo",
+        local_root=database_manager.local_root,
     )
     version_store = DulwichFileVersionStore(
         history_config.storage_root,
@@ -92,15 +102,9 @@ async def main() -> None:
         return
 
     operation_id = json.loads(apply_result.content)["operation_id"]
-    inspect_result = await executor.execute(
-        ToolExecutionRequest(
-            call_id="inspect-patch-operation",
-            tool_name="inspect_file_change",
-            raw_arguments={"operation_id": operation_id},
-        ),
-        state,
-    )
-    _LOGGER.info("从 Commit 实时计算的操作详情：\n%s", inspect_result.content)
+    # 操作详情只供客户端和审计代码使用，不再占用模型工具列表。
+    inspect_result = service.inspect(operation_id)
+    _LOGGER.info("从 Commit 实时计算的操作详情：\n%s", inspect_result.to_dict())
 
     history_result = await executor.execute(
         ToolExecutionRequest(

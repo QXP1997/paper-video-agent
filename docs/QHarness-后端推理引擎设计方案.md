@@ -37,7 +37,7 @@ QHarness 不负责训练或托管模型，也不是 vLLM、llama.cpp 一类模�
 - Git 状态和 Diff；
 - Workspace 边界控制；
 - 本地权限判断与用户审批；
-- SQLite 持久化；
+- SQLAlchemy 持久化（本地默认单个 SQLite 数据库）；
 - 中断恢复；
 - Context Token Budget；
 - 会话压缩；
@@ -49,7 +49,7 @@ QHarness 不负责训练或托管模型，也不是 vLLM、llama.cpp 一类模�
 - 多租户；
 - 独立模型网关；
 - LiteLLM Proxy 部署；
-- PostgreSQL、Temporal、S3 等服务端基础设施；
+- Temporal、S3 等服务端基础设施；
 - 远程 Worker；
 - 多 Agent 与 Agent 间协作；
 - A2A 协议；
@@ -57,7 +57,9 @@ QHarness 不负责训练或托管模型，也不是 vLLM、llama.cpp 一类模�
 - 长期用户记忆；
 - 可视化工作流编排。
 
-A2A 后续只作为外围协议适配层，不进入核心运行时数据模型。
+A2A 后续只作为外围协议适配层，不进入核心运行时数据模型。数据库接口从
+首版就保持方言无关，为以后同一进程服务多个租户以及切换 MySQL/PostgreSQL
+预留边界，但当前阶段不实现租户管理和分布式调度。
 
 ## 3. 设计原则
 
@@ -71,7 +73,7 @@ Kernel 只负责状态推进、事件分发、恢复和停止判断。模型协�
 
 ### 3.3 完整历史与模型上下文分离
 
-SQLite 保存完整、可审计的运行历史；Context Compiler 根据当前模型、Token Budget 和任务状态生成本轮请求。不能把数据库消息列表直接作为模型上下文。
+应用数据库保存完整、可审计的运行历史；本地默认使用 SQLite。Context Compiler 根据当前模型、Token Budget 和任务状态生成本轮请求。不能把数据库消息列表直接作为模型上下文。
 
 ### 3.4 副作用必须受控
 
@@ -115,7 +117,7 @@ CLI / TUI / Desktop / IDE（以后）
 │               └── MCP（以后）                │
 │                                             │
 │  Workspace Manager                          │
-│  SQLite Event Store                         │
+│  Application Database / Event Store         │
 │  Local Artifact Store                       │
 └─────────────────────────────────────────────┘
 ```
@@ -187,7 +189,7 @@ QHarness 自己定义并维护以下核心对象：
 - 将内部状态变化输出为 `RunEvent`；
 - 在启动时恢复未结束 Run。
 
-Kernel 不直接依赖模型厂商 SDK、SQLite SQL 语句或具体 Shell 实现。
+Kernel 不直接依赖模型厂商 SDK、SQLAlchemy 模型或具体 Shell 实现。
 
 ### 6.3 Model Backend
 
@@ -252,11 +254,12 @@ Provider Adapter 必须同时保留：
 
 首版工具：
 
-- `file.read`；
-- `file.list`；
-- `file.search`，底层使用 ripgrep；
-- `file.apply_patch`；
-- `shell.exec`；
+- `read_file`；
+- `list_directory`；
+- `search_text`，底层使用 ripgrep；
+- `write_file`、`replace_text`、`apply_patch`；
+- `run_command`，在 SRT 内执行完整 Shell 命令；
+- `get_file_history`、`get_workspace_status`、`rollback_file_change`；
 - `process.write`；
 - `process.poll`；
 - `process.terminate`；
@@ -338,9 +341,13 @@ ASK：暂停 Run，等待用户审批
 
 审批必须与完整的 ToolCall 参数绑定。参数变化、审批过期或 Run 变化后，旧审批自动失效。
 
-### 6.8 SQLite Event Store
+### 6.8 Application Database 与本地 SQLite
 
-SQLite 是本地版本的默认存储，保存运行状态和可恢复事件。
+数据库基础设施由一个进程级 `DatabaseManager` 统一持有 Engine、连接池和
+SessionFactory。SQLite 是本地版本的默认方言，并且整个应用只使用一个数据库
+文件；功能仓储不自行创建 Engine，也不为每个工作区创建数据库文件。所有业务
+表通过 `tenant_id`、`workspace_id` 等字段做逻辑隔离。切换 MySQL/PostgreSQL
+时只更换 SQLAlchemy URL 和驱动，不修改业务服务。
 
 建议表：
 
@@ -376,7 +383,7 @@ PRAGMA synchronous = NORMAL;
 - 不持久化每个流式 Token；
 - 持久化有恢复价值的关键事件；
 - 使用异步写入队列串行化高频事件；
-- 每次升级执行 Schema Migration；
+- 每次升级执行 Alembic Schema Migration；
 - 提供导出和备份能力。
 
 SQLite 保证数据库事务，但不能保证外部副作用 exactly-once。工具开始后、结果落库前发生崩溃时，状态必须设为 `TOOL_OUTCOME_UNKNOWN`，不得盲目自动重试。
@@ -518,18 +525,18 @@ COMPACTING
 
 | 能力 | 采用方案 | QHarness 自研部分 |
 |---|---|---|
-| 数据库 | SQLite | Schema、Event、恢复语义 |
+| 数据库 | SQLite / MySQL / PostgreSQL | Schema、Event、恢复语义 |
 | ORM/迁移 | SQLAlchemy、Alembic | Repository 与领域映射 |
 | 数据校验 | Pydantic | Domain Model |
 | HTTP | HTTPX | Model Backend |
 | 模型 SDK | 厂商官方 SDK | Provider Adapter |
 | 文件搜索 | ripgrep | 面向模型的 Search Tool |
-| Git | git CLI | Git Tool Contract |
-| Patch | git apply 或 unified diff 库 | Patch Tool Contract 与审计 |
+| Git 历史 | Dulwich | 工作区私有 Commit、冲突规则与工具契约 |
+| Patch | 受控 unified diff 解析 | 原子落盘、审计和补偿恢复 |
 | 凭据 | keyring | Credential 引用规则 |
 | 日志 | logging 或 structlog | RunEvent 映射 |
 | 工具扩展 | MCP SDK，后续 | MCP Adapter 与权限 |
-| 沙箱 | Docker，可选 | Workspace 挂载和生命周期 |
+| 沙箱 | Anthropic Sandbox Runtime | 策略、运行时准备、超时和进程树生命周期 |
 | 测试 | pytest、pytest-asyncio | Kernel 和 Coding Eval |
 
 第一阶段不应自研数据库、模型 HTTP 客户端、Git、代码搜索、容器运行时、MCP 协议或日志后端。
@@ -574,6 +581,10 @@ qharness/
 │   ├── engine.py
 │   ├── rules.py
 │   └── approvals.py
+├── persistence/
+│   ├── manager.py
+│   ├── config.py
+│   └── alembic/
 ├── storage/
 │   ├── run_store.py
 │   ├── event_store.py
@@ -608,7 +619,7 @@ qharness/
 实现：
 
 - OpenAI-compatible Backend；
-- SQLite Event Store；
+- Application Event Store（本地默认 SQLite）；
 - Run Snapshot；
 - 本地 Artifact；
 - Usage 统计；
@@ -641,7 +652,8 @@ qharness/
 - Local Policy；
 - Approval；
 - Workspace 隔离；
-- 可选 Docker Sandbox；
+- SRT 策略与审批完善；
+- 可选容器沙箱后端；
 - Hooks；
 - MCP Adapter；
 - 第二个原生 Model Backend。
@@ -748,7 +760,7 @@ QHarness 第一阶段采用以下组合：
   Tool Contract
   Workspace Manager
   Local Policy / Approval
-  SQLite Event 与恢复语义
+  Application Event 与恢复语义
   Harness Eval
 
 复用：
@@ -757,10 +769,11 @@ QHarness 第一阶段采用以下组合：
   Pydantic
   HTTPX / 厂商 SDK
   ripgrep
-  git
+  Dulwich
+  Anthropic Sandbox Runtime
   keyring
   pytest
-  Docker（可选）
+  容器沙箱后端（可选）
   MCP SDK（后续）
 ```
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Protocol, TypeAlias, runtime_checkable
 
+from dulwich.ignore import IgnoreFilter, IgnoreFilterManager
 from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
 
@@ -27,6 +28,18 @@ _GIT_FILE_MODE = 0o100644
 _GIT_EXECUTABLE_MODE = 0o100755
 _LOCKS_GUARD = threading.Lock()
 _VERSION_STORE_LOCKS: dict[str, threading.RLock] = {}
+_DEFAULT_IGNORE_PATTERNS = (
+    b".git/",
+    b".qharness/",
+    b".venv/",
+    b"venv/",
+    b"node_modules/",
+    b"__pycache__/",
+    b"*.py[cod]",
+    b".pytest_cache/",
+    b".mypy_cache/",
+    b".ruff_cache/",
+)
 
 # 文件内容与普通权限位。None 表示从 Tree 中删除文件。
 VersionFile: TypeAlias = tuple[bytes, int]
@@ -383,18 +396,27 @@ class DulwichFileVersionStore:
         """安全扫描普通文件；私有元数据和用户项目 .git 不进入历史。"""
 
         entries: dict[str, tuple[int, bytes]] = {}
+        ignore_spec = _load_ignore_spec(root)
         for directory, directory_names, file_names in os.walk(root):
-            directory_names[:] = sorted(
-                name
-                for name in directory_names
-                if name.casefold() not in {".git", ".qharness"}
-                and not (Path(directory) / name).is_symlink()
-            )
+            allowed_directories: list[str] = []
+            for name in sorted(directory_names):
+                child = Path(directory) / name
+                relative_directory = child.relative_to(root).as_posix() + "/"
+                if (
+                    name.casefold() in {".git", ".qharness"}
+                    or child.is_symlink()
+                    or ignore_spec.is_ignored(relative_directory) is True
+                ):
+                    continue
+                allowed_directories.append(name)
+            directory_names[:] = allowed_directories
             for file_name in sorted(file_names):
                 file_path = Path(directory) / file_name
                 if file_path.is_symlink() or not file_path.is_file():
                     continue
                 relative_path = file_path.relative_to(root).as_posix()
+                if ignore_spec.is_ignored(relative_path) is True:
+                    continue
                 try:
                     content = file_path.read_bytes()
                     file_mode = file_path.stat().st_mode
@@ -612,6 +634,20 @@ def _validate_repository_path(path: str) -> str:
     if candidate.parts[0].casefold() in {".git", ".qharness"}:
         raise WorkspaceHistoryError(f"保留目录不能写入私有工作区历史：{path}")
     return candidate.as_posix()
+
+
+def _load_ignore_spec(root: Path) -> IgnoreFilterManager:
+    """创建支持根目录和嵌套 ``.gitignore`` 的 Dulwich 规则管理器。"""
+
+    default_filter = IgnoreFilter(
+        _DEFAULT_IGNORE_PATTERNS,
+        ignorecase=os.name == "nt",
+    )
+    return IgnoreFilterManager(
+        str(root),
+        global_filters=[default_filter],
+        ignorecase=os.name == "nt",
+    )
 
 
 def _entry_action(

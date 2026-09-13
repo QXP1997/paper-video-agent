@@ -9,6 +9,7 @@ description = "Coding Agent Harness"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "alembic>=1.14.0,<2.0.0",
     "dulwich>=0.22.8,<0.25.0",
     "jsonschema>=4.23.0,<5.0.0",
     "openai>=1.68.0,<3.0.0",

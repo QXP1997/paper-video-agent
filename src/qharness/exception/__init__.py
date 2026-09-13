@@ -2,6 +2,9 @@
 """QHarness 对外暴露的统一业务异常。"""
 
 from qharness.exception.error import (
+    DatabaseConfigurationError,
+    DatabaseError,
+    DatabaseMigrationError,
     ModelBackendError,
     ModelConfigurationError,
     QHarnessError,
@@ -29,6 +32,9 @@ from qharness.exception.error import (
 )
 
 __all__ = [
+    "DatabaseConfigurationError",
+    "DatabaseError",
+    "DatabaseMigrationError",
     "ModelBackendError",
     "ModelConfigurationError",
     "QHarnessError",
