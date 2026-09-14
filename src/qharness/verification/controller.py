@@ -5,11 +5,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from qharness.exception import LoopConfigurationError, LoopExecutionError, WorkspaceError
-from qharness.loop.config import Role
+from qharness.loop.config import LoopConfig, Role
 from qharness.loop.models import (
-    CheckStatus, EvidenceLink, Phase, ProgressDelta, RecordStageVerdict, RecordTaskVerdict,
+    CheckStatus, EvidenceLink, FailureDiagnosis, FailureLayer, Phase, ProgressDelta, Question, RecordStageVerdict, RecordTaskVerdict,
     QuestionFinding, ReopenTodos, Scope, StageVerdict, TaskVerdict, TodoStatus,
 )
+from qharness.loop.progress import ProgressTracker, check_addresses
+from qharness.loop.transitions import reduce
 from qharness.loop.repository import digest, encode
 from qharness.verification.contracts import CheckEvidence, CheckSpec, FailureBundle
 from qharness.verification.evidence import combine
@@ -32,7 +34,8 @@ class CheckCatalog:
         plan = state.attempts[-1].plan
         todo = next(t.todo for t in state.todos if t.todo.id == plan.todo_id)
         targets = {Scope.STAGE: set(plan.expected_results), Scope.TODO: set(todo.acceptance_refs) | set(todo.done_when)}
-        return tuple(s for s in self.specs if s.scope in targets and set(s.targets) <= targets[s.scope])
+        return tuple(s for s in self.specs if s.scope in targets and set(s.targets) <= targets[s.scope]
+                     and (s.scope != Scope.STAGE or not plan.information_sources or s.id in plan.information_sources))
 
     def task_checks(self, state):
         return tuple(s for s in self.specs if s.scope == Scope.TASK)
@@ -45,6 +48,8 @@ class CheckCatalog:
 class VerificationController:
     def __init__(self, runner: CheckRunner, model=None):
         self.runner, self.model, self.repository = runner, model, runner.repository
+        self.config = LoopConfig.model_validate(self.repository.snapshot()["policy"]["loop"])
+        self.progress = ProgressTracker(runner)
 
     async def _collect(self, verification_id, specs, state, judge, baselines):
         specs = tuple(CheckSpec.model_validate(s) for s in specs)
@@ -64,6 +69,12 @@ class VerificationController:
         for spec in specs:
             if spec.scope not in allowed or not set(spec.targets) <= allowed[spec.scope]:
                 raise LoopConfigurationError("检查目标不属于当前阶段、Todo 或原始任务要求")
+            if not task and spec.on_failure and not set(spec.on_failure.invalidated_assumptions) <= set(state.attempts[-1].plan.assumptions):
+                raise LoopConfigurationError("检查不能否定当前 StagePlan 中不存在的前提")
+            if not task and self.config.track_gap_progress and spec.scope == Scope.STAGE:
+                refs = check_addresses(spec)
+                if not refs or not refs <= set(state.attempts[-1].plan.addresses):
+                    raise LoopConfigurationError("阶段检查必须明确关联当前 addresses，不能用无关证据代替目标验证")
         relevant = {q.id for q in state.questions if todo and set(q.acceptance_refs) & set(todo.acceptance_refs)}
         conclusions = [c for spec in specs for c in spec.conclusions]
         if (any(c.question_id not in relevant for c in conclusions)
@@ -165,7 +176,7 @@ class VerificationController:
         return digest(["verification-report", verification_id])
 
     async def verify_stage(self, verification_id: str, specs: Sequence[CheckSpec], *, judge=False,
-                           baselines: dict[str, str] | None = None) -> StageVerdict:
+                           baselines: dict[str, str] | None = None, current_specs=None) -> StageVerdict:
         state = (await asyncio.to_thread(self.repository.snapshot))["state"]
         if state is None or state.phase != Phase.VERIFYING:
             raise LoopConfigurationError("Stage 验证必须在 Actor 交回之后")
@@ -187,20 +198,36 @@ class VerificationController:
                           if todo_results[r] == CheckStatus.PASS)
         regressed = tuple(EvidenceLink(ref=r, evidence_refs=tuple(e for e in links[r] if statuses[e] == CheckStatus.FAIL)) for r in todo.acceptance_refs
                           if todo_results[r] == CheckStatus.FAIL)
-        findings = {kind: tuple(QuestionFinding(ref=c.question_id, finding=c.finding, evidence_refs=(e.id,))
+        findings = {kind: tuple(QuestionFinding(ref=c.question_id, finding=c.finding, fact_id=c.fact_id, evidence_refs=(e.id,))
                                for e in evidence if statuses[e.id] == CheckStatus.PASS
                                for c in e.spec.conclusions if c.kind == kind)
                     for kind in ("resolved", "narrowed", "eliminated")}
         gaps = tuple(r for r in todo.acceptance_refs if todo_results[r] != CheckStatus.PASS)
         if todo_status != CheckStatus.PASS and not gaps:
             gaps = tuple(todo.acceptance_refs)  # done_when/语义仍缺证据，不能暗示 Todo 已完成。
+        diagnoses = tuple(FailureDiagnosis(layer=e.spec.on_failure.layer if e.spec.on_failure else FailureLayer.UNKNOWN,
+            summary=e.spec.on_failure.summary if e.spec.on_failure else "断言失败，当前检查尚未证明原因所在层级",
+            evidence_refs=(e.id,), invalidated_assumptions=e.spec.on_failure.invalidated_assumptions if e.spec.on_failure else ())
+            for e in evidence if statuses[e.id] == CheckStatus.FAIL)
+        new_questions = ()
+        if (self.config.layered_feedback or self.config.dynamic_stage_planning or self.config.track_gap_progress):
+            unknown_failure = stage_status == CheckStatus.FAIL and any(d.layer == FailureLayer.UNKNOWN for d in diagnoses)
+            if unknown_failure or attempt.outcome.reported_assumption_changes:
+                previous = await self.progress.view(state, todo.id, specs=current_specs)
+                if not previous.unresolved_questions:
+                    new_questions = (Question(id="Q-failure-" + digest([todo.id, todo.version, state.version])[:16],
+                        description="当前验收失败的原因和影响范围尚未确认", acceptance_refs=todo.acceptance_refs),)
         verdict = StageVerdict(**attempt.identity.model_dump(), stage_status=stage_status, todo_status=todo_status,
             expected_vs_observed=encode({"stage": stage_results, "todo": todo_results}),
             progress=ProgressDelta(satisfied_criteria=satisfied, regressed_criteria=regressed,
                 resolved_questions=findings["resolved"], narrowed_questions=findings["narrowed"],
-                eliminated_hypotheses=findings["eliminated"]),
+                eliminated_hypotheses=findings["eliminated"], new_questions=new_questions),
             remaining_gaps=gaps, evidence_refs=tuple(e.id for e in evidence),
-            diagnosis_hints=(proposal.expected_vs_observed,) if proposal else ())
+            diagnosis_hints=(proposal.expected_vs_observed,) if proposal else (), diagnoses=diagnoses)
+        if self.config.layered_feedback or self.config.dynamic_stage_planning or self.config.track_gap_progress:
+            projected = reduce(state, RecordStageVerdict(run_id=state.run_id, expected_version=state.version, verdict=verdict))
+            report = await self.progress.view(projected, todo.id, specs=current_specs)
+            verdict = StageVerdict.model_validate({**verdict.model_dump(), "progress_report": report})
         return await self._record(verification_id, state, evidence, statuses, verdict, RecordStageVerdict)
 
     async def verify_task(self, verification_id: str, specs: Sequence[CheckSpec], *, judge=False,

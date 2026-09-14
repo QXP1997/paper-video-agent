@@ -1,6 +1,6 @@
 # QHarness Agent Loop 实现计划
 
-> 状态：批次 1—5 已实现并通过离线行为检查；批次 6—8 待实现（更新于 2026-09-14）<br>
+> 状态：批次 1—6 已实现并通过离线行为检查；批次 7—8 待实现（更新于 2026-09-14）<br>
 > 制定日期：2026-09-13  
 > 代码基线：HEAD `8ff37fe` 及当日工作区  
 > 设计依据：[Agent Loop 文献综述与 QHarness 设计建议](./Agent-Loop文献综述与QHarness设计建议.md)  
@@ -121,14 +121,14 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 **目的：** 在已贯通流程上完成具体策略，而不是只保留枚举和几个 Prompt。
 
-- [ ] 分层反馈：根据证据判断错误所在层级，输出 preserve / invalidate / focus；未明确原因先调查。
-- [ ] 动态阶段粒度：围绕关键不确定性选择 INVESTIGATE / IMPLEMENT / VALIDATE，明确交回边界。
-- [ ] 缺口关联：维护 Criteria、Questions、addresses 和 ProgressDelta，校验每个阶段对 Todo 的实际作用。
-- [ ] 保留有效调查成果：排除原因和缩小范围也算进展；读文件数或自评分不能直接当进度。
-- [ ] 对反复无新信息的调查要求改变获取信息的方法，同时保护合法分页、轮询和长工具运行。
-- [ ] 为三项机制增加独立配置与对照开关，测试模式下支持消融；核心权限和执行正确性不随开关关闭。
+- [x] 分层反馈：根据证据判断错误所在层级，输出 preserve / invalidate / focus；未明确原因先调查。
+- [x] 动态阶段粒度：围绕关键不确定性选择 INVESTIGATE / IMPLEMENT / VALIDATE，明确交回边界。
+- [x] 缺口关联：维护 Criteria、Questions、addresses 和 ProgressDelta，校验每个阶段对 Todo 的实际作用。
+- [x] 保留有效调查成果：排除原因和缩小范围也算进展；读文件数或自评分不能直接当进度。
+- [x] 对反复无新信息的调查要求改变获取信息的方法，同时保护合法分页、轮询和长工具运行。
+- [x] 为三项机制增加独立配置与对照开关，测试模式下支持消融；核心权限和执行正确性不随开关关闭。
 
-主要位置：`loop/feedback.py`、`loop/progress.py`、`loop/stage_planner.py` 和对应测试/配置。
+主要位置：`loop/feedback.py`、`loop/progress.py`、原有 `loop/planner.py` 和对应测试/配置；阶段规划继续扩展 Planner，不新增 stage_planner 包装层。
 
 验收出口：局部错误不会无故重做全局规划；前提错误不会继续盲修；明确任务可一阶段完成；调查阶段不能通过不断降低目标“刷完成”；有效排除假设不会误判为停滞。
 
@@ -475,7 +475,89 @@ TaskContract 仍由应用根据用户任务建立；检查定义、输入依赖�
 
 示例 19 外部只调用一次 `services.executor.run()`，不手工安排 Stage/验证/反馈事件。它复用 ScriptedModelBackend 和可控 Sandbox Fixture，文件通过原 write_file/WorkspaceMutationService 真实落盘，检查返回预设规则下的结果。此结果证明控制流程与调用边界，不能代替真实模型、真实测试进程或 SRT 端到端效果评测。
 
-**下一步为批次 6：落实三项推理改进。** 在当前反馈与规划模块上实现更细的错误分层、动态阶段粒度及缺口关联/无进展判定，并加入配置开关和对照实验；继续复用当前完整执行主线。
+上述为批次 5 交付记录；三项推理改进现已由批次 6 接入。
+
+### 5.6 批次 6
+
+2026-09-14 完成三项推理策略，累计 **158 项离线测试通过，本批新增 25 项测试**。继续扩展原 Planner、FeedbackRouter、Verifier、ContextCompiler 和 reducer；唯一新增生产模块为 `loop/progress.py`，用于从已有 CheckEvidence 派生知识和缺口。指导信息、诊断和进展复用 RunState / Artifact，不新增模型 Backend、工具执行通道、数据库表或迁移。
+
+**配置与兼容：**
+
+```python
+config = LoopConfig(
+    layered_feedback=True,
+    dynamic_stage_planning=True,
+    track_gap_progress=True,
+    max_no_progress_investigations=2,
+)
+```
+
+`config/loop.example.toml` 显式启用三项机制；直接使用 `LoopConfig()` 或读取缺少这些字段的旧 Run 时保持 False，避免重建服务就静默改变旧策略。每个 Run 的策略仍由原仓储固定；比较策略应创建独立 Run，不能中途换开关并重置预算。关闭某项机制不关闭权限、执行账本、原验收覆盖、版本校验或独立 Task 验证。旧 CheckSpec 没有新增元数据时，其检查定义指纹保持兼容。
+
+| 开关 | 启用后的职责 | 关闭后的行为 |
+| --- | --- | --- |
+| layered_feedback | 按证实的错误层级选择调整范围，输出 preserve / invalidate / focus | 使用原有基础反馈策略；已证伪前提仍不能沿用修复 |
+| dynamic_stage_planning | 根据关键问题和验收缺口约束阶段类型 | 不注入阶段类型建议或强制类型；保留原路由对调查等行为的约束 |
+| track_gap_progress | 校验阶段关联、按实际发现去重并处理连续无进展 | 不启用关联约束和无进展路由；原完成验收始终生效 |
+
+任一策略需要时，Verifier 都可派生 ProgressReport，作为共同的事实输入；开关控制的是各项决策和约束，不是关闭其他机制所需的基础证据。
+
+**分层反馈如何落地：**
+
+应用在原 CheckSpec 上可补充 `on_failure=DiagnosisRule(...)`，声明这个具体断言失败能够证明的层级：local_action、stage_assumption、todo_decomposition 等。Verifier 只为实际、仍有效的 FAIL 生成 FailureDiagnosis；未配置诊断的失败标为 unknown。普通测试退出码只能证明失败，不能自动证明根因，模型 Judge 的诊断文字也不能替代检查依据。
+
+- 局部失败证据充分时，沿用原计划作有界 REPAIR；不再调用 Stage Planner，不重做全局 Todo。
+- 检查否定阶段前提时选择 REPLAN_STAGE，标出具体失效前提。新计划不得继续使用这些前提；关闭实验策略也不能绕过原方案修复的正确性约束。
+- 检查证明任务分解问题时才走 REPLAN_TODO，仍需原 TodoPlanPatch 和原始契约覆盖检查。
+- 原因未知的阶段失败，或仅有 Actor 声称前提变化时，先 INVESTIGATE。必要时增加关联原验收项的问题；不会把模型猜测直接升级成全局计划错误。
+- 检查环境 ERROR 优先有界 RETRY_CHECK，保留业务方案。证据不足保留原补查/等待边界，不假定重写代码可以解决。
+
+FeedbackDecision 的 preserve / invalidate 使用有版本的 task、todo、stage、approach、assumption 和 evidence 引用，focus 指向当前 Todo 的验收项或相关问题。reducer 拒绝未知对象、无关 Todo、原任务义务的失效请求，以及一边保留方案修复一边否定其前提的矛盾决策。这些字段说明下一阶段的保留/调整范围；不会删除历史证据、自动撤回文件或修改用户契约。实际重规划、证据重查和完成传播继续通过现有事件执行。
+
+**动态阶段与缺口关联：**
+
+原 Planner 在规划前用当前文件、环境和完整检查目录重算 ProgressReport。相关未决 Questions 视为当前关键不确定性，优先 INVESTIGATE；没有这些问题且尚有验收缺口时 IMPLEMENT；验收项已有有效通过凭据、但 Todo 的 done_when 或语义确认仍未完成时 VALIDATE。明确任务允许一个实施阶段完成，不强制先调查，也不强制拆成固定数量小步骤。Question 是否关键由应用提供及受信任验证反馈控制，当前没有学习得到的重要性评分。
+
+控制器给出类型、focus 和已有证据，模型仍负责本轮 expected_results、approach、stop_when / replan_when，以及可选 information_sources。StagePlan 的类型、版本和缺口关联先校验，非法输出进入原有界协议修正；Actor 继续按原停止/重规划条件交回。REPAIR 完整保留原计划，不在修复入口重新生成阶段。
+
+启用缺口关联时，Stage 检查需要用 `addresses` 或 QuestionConclusion.question_id 关联原验收项/问题，不能仅有一个与 Todo 无关的“命令运行成功”。StagePlan.addresses 必须指向当前未解决缺口，并有受信任阶段检查覆盖。`information_sources` 可选取已有 Stage 检查 ID；模型不能据此删减 Todo / Task 检查。
+
+```python
+from qharness.verification import CheckSpec, DiagnosisRule, QuestionConclusion
+
+investigation = CheckSpec(
+    id="exclude-input-branch", scope="stage", targets=("排除输入校验分支",),
+    command="python -m unittest tests.test_input_diagnosis", kind="unittest",
+    inputs=("pagination.py", "validation.py", "tests/test_input_diagnosis.py"),
+    addresses=("Q1",),
+    conclusions=(QuestionConclusion(question_id="Q1", kind="eliminated",
+        finding="输入校验分支不是当前分页错误的原因", fact_id="pagination-not-input"),),
+)
+```
+
+上例绑定必须确实由该检查证明，不能给任意绿色测试贴上调查结论。resolved / narrowed / eliminated 由应用定义检查的成功语义。普通检查未配置结论时，仍能验证阶段，但不会凭空产生问题进展。运行中出现目录尚无法验证的新问题时，需要应用补充相应检查；当前会保留缺口并在有界尝试后等待，不把模型生成的检查直接授予可信地位。
+
+**保留发现和停止重复调查：**
+
+ProgressTracker 从原 CheckEvidence 与 ProgressDelta 重建有效发现。文件依赖、环境、检查定义改变/消失，或同一检查后来明确失败时，旧发现不再作为有效依据。Todo 重分解后，仍关联原验收项且证据有效的调查结果继续可用；不用重新读取同样的事实。
+
+发现优先用应用提供的 fact_id 标识；未提供时只做 Unicode、空白和大小写规范化后的文字去重，不声称具备任意语义等价识别能力。排除假设和缩小范围也算新信息；重复产生不同 Evidence ID、改写 Stage 目标、增加文件读取量或自评分不算新发现。调查结论只更新 Questions，不把阶段 PASS 变成 Todo PASS。
+
+只有已完整交回且有稳定 Stage PASS 检查的调查才参与连续无进展计数。首个新发现不计停滞；连续两次没有新增验收/问题信息时，反馈要求 change_strategy 并有界重规划。Planner 按实际检查命令、cwd、类型和输入依赖比较来源；换检查 ID 或阶段措辞无法绕过，新来源仍须来自应用目录。真实新发现重置停滞计数；不存在可用替代来源时有界等待。ERROR / INCONCLUSIVE、Actor 内尚在分页、轮询或长工具执行都不递增调查停滞；已有工具与 Actor 总预算仍然适用。
+
+**验证与示例：**
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe -X utf8 examples/20_reasoning_strategies.py
+.\.venv\Scripts\python.exe -X utf8 examples/20_reasoning_strategies.py --ablation
+```
+
+示例 20 用一次 Executor 调用运行“排除假设 → 重复两次没有新信息 → 更换来源并定位问题 → 实施失败 → 局部修复 → 独立 Task 验收”。对照模式枚举 2³ 种开关组合，在同一明确的局部修复 Fixture 上记录实际预算和阶段数：八组均完成，均为 3 个 Attempt、7 次模型调用尝试、10 个工具逻辑调用。这是开关与执行语义对照，不能据此推断策略提升了成功率或降低了成本。
+
+专项测试还覆盖：类型和无关检查在 Actor 前被拒绝、缺少 done_when 时选择 VALIDATE、原 Task 覆盖缺失仍等待、未知失败先调查、前提失效不能重用、改名无法规避停滞、不同来源的排除/缩小范围算进展、调查证据过期、有效知识跨 Todo 重分解保留、在途阶段不增加停滞、环境故障只补查、原共享预算仍生效，以及旧配置和旧检查指纹兼容。原 133 项行为检查继续通过。
+
+**下一步为批次 7：长期任务、用户交互与恢复联调。** 在现有 ContextCompiler、RunContext、仓储和 Executor 上完成上下文工作记忆与压缩、RunService/收件箱、Steering 与审批回复、恢复核对和单写者协调。真实模型、SRT 与跨任务策略收益评测继续按批次 8 验收。
 
 ## 6. 进度维护规则
 

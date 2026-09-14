@@ -19,4 +19,8 @@ max_stage_replans = 2
 max_todo_replans = 2
 max_check_retries = 2
 max_run_events = 1024
+layered_feedback = true
+dynamic_stage_planning = true
+track_gap_progress = true
+max_no_progress_investigations = 2
 # 工具限额、审批与具名覆盖继续配置在原有 tool.toml。

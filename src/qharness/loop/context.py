@@ -88,6 +88,11 @@ class ContextCompiler:
             "observations": list(observations), "output_schema": output_schema.model_json_schema(),
         }
         prompt = ROLE_PROMPTS[role]
+        if role == Role.STAGE_PLANNER and (self.config.dynamic_stage_planning or self.config.track_gap_progress):
+            prompt += (" 使用控制器提供的 stage_guidance 制定本轮可检查的目标；enforce_kind 为真时遵从其 kind。"
+                       "围绕 focus 选择 addresses、expected_results、approach 和明确的 stop_when/replan_when。"
+                       "information_sources 可从受信任目录选择阶段检查 ID；没有适用检查时不能虚构检查或降低原验收要求。"
+                       "保留仍有效的调查发现。change_strategy 为真时更换实际信息来源，改写标题或自报进度不能代替新证据。")
         if output_schema is TodoPlanPatch:
             prompt = "根据当前 REPLAN_TODO 反馈输出 TodoPlanPatch，说明理由并引用反馈中的证据。" \
                      "修订计划保持原任务验收覆盖，保留有效 Todo；更改完成义务须用新 Todo ID，不能削弱原始任务。"

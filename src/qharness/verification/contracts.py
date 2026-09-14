@@ -5,7 +5,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
-from qharness.loop.models import CheckStatus, ContractModel, Scope, Text, Version
+from qharness.loop.models import CheckStatus, ContractModel, FailureLayer, Scope, Text, Version
 
 
 class CheckKind(StrEnum):
@@ -18,6 +18,20 @@ class QuestionConclusion(ContractModel):
     question_id: Text
     finding: Text
     kind: Literal["resolved", "narrowed", "eliminated"] = "resolved"
+    fact_id: Text | None = None
+
+
+class DiagnosisRule(ContractModel):
+    """应用声明此检查失败能证明的错误层级；不能从退出码自动猜测根因。"""
+    layer: FailureLayer
+    summary: Text
+    invalidated_assumptions: tuple[Text, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_layer(self) -> Self:
+        if self.invalidated_assumptions and self.layer != FailureLayer.STAGE_ASSUMPTION:
+            raise ValueError("前提失效只能由 stage_assumption 诊断声明")
+        return self
 
 
 class CheckSpec(ContractModel):
@@ -34,6 +48,8 @@ class CheckSpec(ContractModel):
     # 仅 COMMAND 生效；默认不把未知非零退出码当业务失败。
     failure_exit_codes: tuple[Annotated[int, Field(strict=True, ge=1)], ...] = ()
     conclusions: tuple[QuestionConclusion, ...] = ()
+    addresses: tuple[Text, ...] = ()
+    on_failure: DiagnosisRule | None = None
 
     @model_validator(mode="after")
     def validate_spec(self) -> Self:

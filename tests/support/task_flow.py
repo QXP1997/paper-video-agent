@@ -101,3 +101,35 @@ def successful_script(*, investigate=True, repair=True, integration_failure=Fals
     if integration_failure:
         steps.extend([planned(), write("integration.py", "wired"), handed_back()])
     return steps
+
+
+def reasoning_catalog():
+    """给同一受控分页检查补充可信关联与局部诊断，不改变断言语义。"""
+    from qharness.verification import DiagnosisRule
+    specs = []
+    for spec in catalog().specs:
+        changes = {}
+        if spec.scope == "stage":
+            changes["addresses"] = (("Q1",) if spec.id == "investigate" else
+                                    ("C2",) if spec.id == "stage-input" else ("C1",))
+        if spec.command in ("boundary", "input"):
+            changes["on_failure"] = DiagnosisRule(layer="local_action", summary="固定单元断言定位到分页/输入实现")
+        specs.append(CheckSpec.model_validate({**spec.model_dump(), **changes}))
+    return CheckCatalog(tuple(specs))
+
+
+def guided_plan(*, kind=None, source=None, target=None, addresses=None, assumptions=()):
+    """脚本遵从控制器 guidance；参数可故意构造违约输出，验证拒绝边界。"""
+    def response(request):
+        data = payload(request)
+        guide = next((json.loads(n)["stage_guidance"] for n in data["observations"]
+                      if n.startswith('{"stage_guidance":')), None)
+        selected_kind = kind or (guide["kind"] if guide else None) or "implement"
+        proposal = planned(selected_kind)(request)
+        plan = StagePlan.model_validate_json(proposal.message.content)
+        focus = addresses or ((tuple(guide["focus"]) if guide else ("Q1",))
+                             if selected_kind == "investigate" else plan.addresses)
+        return answer(StagePlan.model_validate({**plan.model_dump(), "addresses": focus,
+            "information_sources": (source,) if source else (), "assumptions": assumptions,
+            **({"expected_results": (target,)} if target else {})}))
+    return response

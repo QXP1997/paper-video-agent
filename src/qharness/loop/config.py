@@ -56,6 +56,11 @@ class LoopConfig(ContractModel):
     max_todo_replans: int = Field(default=2, ge=0)
     max_check_retries: int = Field(default=2, ge=0)
     max_run_events: int = Field(default=1024, ge=8)
+    # 缺省 False 保持旧 Run 策略快照语义；新任务的示例配置显式启用三项策略。
+    layered_feedback: bool = False
+    dynamic_stage_planning: bool = False
+    track_gap_progress: bool = False
+    max_no_progress_investigations: int = Field(default=2, ge=1)
 
     @model_validator(mode="after")
     def validate_policy(self):

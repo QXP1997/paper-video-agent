@@ -81,6 +81,15 @@ class TodoStatus(StrEnum):
     PASSED = "passed"
 
 
+class FailureLayer(StrEnum):
+    LOCAL_ACTION = "local_action"
+    STAGE_ASSUMPTION = "stage_assumption"
+    TODO_DECOMPOSITION = "todo_decomposition"
+    CHECK_ENVIRONMENT = "check_environment"
+    EVIDENCE = "evidence"
+    UNKNOWN = "unknown"
+
+
 class Criterion(ContractModel):
     id: Text
     description: Text
@@ -168,6 +177,7 @@ class StagePlan(ContractModel):
     approach: tuple[Text, ...] = ()
     stop_when: tuple[Text, ...] = Field(min_length=1)
     replan_when: tuple[Text, ...] = Field(min_length=1)
+    information_sources: tuple[Text, ...] = ()
 
     @model_validator(mode="after")
     def validate_addresses(self) -> Self:
@@ -203,6 +213,27 @@ class EvidenceLink(ContractModel):
 
 class QuestionFinding(EvidenceLink):
     finding: Text
+    fact_id: Text | None = None
+
+
+class FailureDiagnosis(ContractModel):
+    layer: FailureLayer
+    summary: Text
+    evidence_refs: tuple[Text, ...] = Field(min_length=1)
+    invalidated_assumptions: tuple[Text, ...] = ()
+
+
+class ProgressReport(ContractModel):
+    """从检查凭据派生，不接受模型自评分。"""
+    todo_id: Text
+    unresolved_criteria: tuple[Text, ...] = ()
+    unresolved_questions: tuple[Text, ...] = ()
+    retained_findings: tuple[QuestionFinding, ...] = ()
+    retained_evidence: tuple[Text, ...] = ()
+    stale_evidence: tuple[Text, ...] = ()
+    novel_refs: tuple[Text, ...] = ()
+    stalled_investigations: int = Field(default=0, ge=0)
+    repeated_sources: tuple[Text, ...] = ()
 
 
 class ProgressDelta(ContractModel):
@@ -233,6 +264,8 @@ class StageVerdict(StageIdentity):
     remaining_gaps: tuple[Text, ...] = ()
     evidence_refs: tuple[Text, ...] = ()
     diagnosis_hints: tuple[Text, ...] = ()
+    diagnoses: tuple[FailureDiagnosis, ...] = ()
+    progress_report: ProgressReport | None = None
 
     @model_validator(mode="after")
     def validate_pass(self) -> Self:
@@ -250,6 +283,18 @@ class FeedbackDecision(ContractModel):
     reason: Text
     evidence_refs: tuple[Text, ...] = ()
     focus: tuple[Text, ...] = ()
+    preserve: tuple[Text, ...] = ()
+    invalidate: tuple[Text, ...] = ()
+    failure_layer: FailureLayer | None = None
+    change_strategy: bool = False
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> Self:
+        unique(self.preserve, "保留范围")
+        unique(self.invalidate, "失效范围")
+        if set(self.preserve) & set(self.invalidate):
+            raise ValueError("同一对象不能同时保留和失效")
+        return self
 
 
 class TaskVerdict(ContractModel):

@@ -21,7 +21,16 @@ class CheckRunner:
 
     def definition_hash(self, spec: CheckSpec) -> str:
         tool = self.tools.executor.registry.get("run_command")
-        return digest(["check-parser-v1", spec.model_dump(mode="json"),
+        definition = spec.model_dump(mode="json")
+        # 新的可选推理元数据未启用时保留既有检查指纹。
+        if not spec.addresses:
+            definition.pop("addresses")
+        if spec.on_failure is None:
+            definition.pop("on_failure")
+        for conclusion in definition["conclusions"]:
+            if conclusion.get("fact_id") is None:
+                conclusion.pop("fact_id", None)
+        return digest(["check-parser-v1", definition,
                        asdict(tool.to_definition()) if tool else None])
 
     async def fingerprints(self, spec: CheckSpec) -> tuple[str, str]:

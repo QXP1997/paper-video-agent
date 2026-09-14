@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 
 from qharness.exception import LoopConfigurationError, LoopExecutionError, LoopTransitionError
 from qharness.loop.config import Role
-from qharness.loop.models import Phase, ReplaceTodoPlan, Route, RunState, StartStage, Todo, TodoStatus
+from qharness.loop.models import Phase, ReplaceTodoPlan, Route, RunState, Scope, StageKind, StartStage, Todo, TodoStatus
+from qharness.loop.progress import check_addresses, source_fingerprint
 from qharness.loop.repository import digest, encode
 from qharness.loop.transitions import create_run, reduce
 
@@ -35,8 +36,9 @@ def select_todo(state: RunState) -> Todo:
 
 
 class Planner:
-    def __init__(self, model: ModelService, context: RunContext):
+    def __init__(self, model: ModelService, context: RunContext, *, progress=None):
         self.model, self.context, self.repository = model, context, model.repository
+        self.progress = progress
 
     async def evidence_context(self, state: RunState) -> tuple[str, ...]:
         """为下一阶段和修复回填最近的实际验证输出，不只把 Evidence ID 交给模型。"""
@@ -116,15 +118,68 @@ class Planner:
                                 patch.model_dump(mode="json"), expected_version=state.version)
         return await asyncio.to_thread(self.repository.apply, event(patch))
 
-    async def stage(self, state: RunState, *, observations=()) -> RunState:
+    async def stage(self, state: RunState, *, observations=(), checks=None) -> RunState:
         observations = (*observations, *await self.evidence_context(state))
         todo = select_todo(state)
         attempt_id = "attempt-" + digest([self.repository.key, state.version])[:32]
         if state.pending_decision and state.pending_decision.route == Route.REPAIR:
             plan = state.attempts[-1].plan
         else:
-            plan = await self._call(Role.STAGE_PLANNER, state, lambda p: reduce(state, StartStage(
-                run_id=state.run_id, expected_version=state.version, plan=p, attempt_id=attempt_id)),
+            config = self.model.compiler.config
+            guide, report = None, None
+            if config.dynamic_stage_planning or config.track_gap_progress:
+                if self.progress is None or checks is None:
+                    raise LoopConfigurationError("阶段策略需要现有 Verifier 和受信任检查目录")
+                report = await self.progress.view(state, todo.id, specs=checks.specs)
+                decision = state.pending_decision
+                investigate = bool(decision and (decision.route == Route.INVESTIGATE or decision.change_strategy))
+                kind = (StageKind.INVESTIGATE if investigate or report.unresolved_questions else
+                        StageKind.IMPLEMENT if report.unresolved_criteria else StageKind.VALIDATE)
+                focus = ((report.unresolved_questions or report.unresolved_criteria) if kind == StageKind.INVESTIGATE
+                         else report.unresolved_criteria) or todo.acceptance_refs
+                if not config.dynamic_stage_planning:
+                    focus = (*report.unresolved_criteria, *report.unresolved_questions) or todo.acceptance_refs
+                guide = {"kind": kind.value if config.dynamic_stage_planning else None,
+                    "focus": focus, "progress": report.model_dump(mode="json"),
+                    "enforce_kind": config.dynamic_stage_planning,
+                    "change_strategy": bool(decision and decision.change_strategy),
+                    "boundary": "围绕缺口设计可验证结果和交回条件；明确任务允许一个阶段完成；调查成功不等于 Todo 完成。"}
+                observations = (*observations, encode({"stage_guidance": guide}))
+                await asyncio.to_thread(self.repository.put_artifact, digest(["stage-guidance", state.version]),
+                                        guide, expected_version=state.version)
+
+            def validate(plan):
+                projected = reduce(state, StartStage(run_id=state.run_id, expected_version=state.version,
+                                                     plan=plan, attempt_id=attempt_id))
+                if guide and config.dynamic_stage_planning and plan.kind.value != guide["kind"]:
+                    raise ValueError("阶段类型必须对应当前关键不确定性或验收缺口：" + guide["kind"])
+                if checks is not None and plan.information_sources:
+                    available = {s.id for s in checks.specs if s.scope == Scope.STAGE and
+                                 set(s.targets) <= set(plan.expected_results)}
+                    if not set(plan.information_sources) <= available:
+                        raise ValueError("information_sources 必须引用覆盖当前阶段结果的目录检查")
+                if report and config.track_gap_progress:
+                    open_refs = set(report.unresolved_criteria) | set(report.unresolved_questions)
+                    if not report.unresolved_criteria:
+                        open_refs.update(todo.acceptance_refs)  # 剩余 done_when 验证仍关联原验收项。
+                    if not set(plan.addresses) <= open_refs or not set(plan.addresses) & set(guide["focus"]):
+                        raise ValueError("阶段必须关联实际未解决缺口，不能反复改写已解决目标")
+                    selected = [s for s in checks.stage_checks(projected) if s.scope == Scope.STAGE]
+                    covered = set().union(*(check_addresses(s) for s in selected))
+                    if (not selected or not set(plan.addresses) <= covered or
+                            any(not check_addresses(s) or not check_addresses(s) <= set(plan.addresses) for s in selected)):
+                        raise ValueError("阶段 addresses 必须有相关的受信任检查覆盖")
+                    if guide["change_strategy"]:
+                        previous = state.attempts[-1]
+                        used = set(report.repeated_sources)
+                        for ref in previous.verdicts[-1].evidence_refs:
+                            # 来源比较只依赖已记录的检查定义，不读取模型对方法的自述。
+                            evidence = self.progress.runner.read(ref)
+                            if evidence.spec.scope == Scope.STAGE:
+                                used.add(source_fingerprint(evidence.spec))
+                        if not {source_fingerprint(s) for s in selected} - used:
+                            raise ValueError("连续无新信息：须更换实际检查命令或输入来源，改名不算改变方法")
+            plan = await self._call(Role.STAGE_PLANNER, state, validate,
                 todo_id=todo.id, observations=observations)
         return await asyncio.to_thread(self.repository.apply, StartStage(run_id=state.run_id,
             expected_version=state.version, plan=plan, attempt_id=attempt_id))

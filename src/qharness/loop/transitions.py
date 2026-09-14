@@ -104,6 +104,9 @@ def _start(state: RunState, event: StartStage) -> dict[str, object]:
     _require(event.attempt_id not in {a.attempt_id for a in state.attempts}, "attempt_id 不能重复使用")
     previous = state.attempts[-1] if state.attempts else None
     route = state.pending_decision.route if state.pending_decision else None
+    if previous and route and previous.verdicts:
+        invalid = {a for d in previous.verdicts[-1].diagnoses for a in d.invalidated_assumptions}
+        _require(not set(plan.assumptions) & invalid, "新阶段不能沿用已被检查否定的前提")
     _require(route != Route.REPLAN_TODO, "必须先提交 TodoPlan 修订")
     same_stage = [a for a in state.attempts if a.plan.stage_id == plan.stage_id]
     if route == Route.REPAIR:
@@ -154,6 +157,16 @@ def _stage_verdict(state: RunState, event: RecordStageVerdict) -> dict[str, obje
         _require(finding.ref in relevant, "问题进展必须引用已知且与当前 Todo 相关的问题")
     _require(set(verdict.remaining_gaps) <= (set(todo.acceptance_refs) | relevant),
              "remaining_gaps 含悬空或无关引用")
+    for diagnosis in verdict.diagnoses:
+        _require(CheckStatus.FAIL in (verdict.stage_status, verdict.todo_status), "失败诊断需要实际失败结果")
+        _require(set(diagnosis.evidence_refs) <= set(verdict.evidence_refs), "诊断必须引用本次验证证据")
+        _require(set(diagnosis.invalidated_assumptions) <= set(attempt.plan.assumptions), "诊断引用未知阶段前提")
+    if verdict.progress_report:
+        report = verdict.progress_report
+        _require(report.todo_id == todo.id, "进展报告属于其他 Todo")
+        _require(set(report.unresolved_criteria) <= set(todo.acceptance_refs) and
+                 set(report.unresolved_questions) <= relevant and
+                 set(report.novel_refs) <= set(todo.acceptance_refs) | relevant, "进展报告含无关缺口")
     regressed = {e.ref for e in delta.regressed_criteria}
     roots = {t.todo.id for t in state.todos if set(t.todo.acceptance_refs) & regressed}
     todos, evidence = _invalidate(state.todos, state.satisfied_criteria, roots)
@@ -181,6 +194,29 @@ def _feedback(state: RunState, event: ApplyFeedback) -> dict[str, object]:
     attempt = state.attempts[-1]
     verdict = attempt.verdicts[-1]
     assert attempt.outcome is not None
+    plan = attempt.plan
+    todo = next(t.todo for t in state.todos if t.todo.id == plan.todo_id)
+    relevant = set(todo.acceptance_refs) | {q.id for q in state.questions if set(q.acceptance_refs) & set(todo.acceptance_refs)}
+    _require(set(decision.focus) <= relevant, "反馈 focus 含当前 Todo 之外的目标")
+    known_evidence = {ref for a in state.attempts for v in a.verdicts for ref in v.evidence_refs}
+    known_evidence |= {ref for link in state.satisfied_criteria for ref in link.evidence_refs}
+    known_evidence |= {ref for v in state.task_verdicts for link in (*v.failed_criteria, *v.criterion_evidence) for ref in link.evidence_refs}
+    stage_ref = f"stage:{plan.stage_id}:v{plan.plan_version}"
+    todo_ref = f"todo:{plan.todo_id}:v{plan.todo_version}"
+    approach_ref = f"approach:{plan.stage_id}:v{plan.plan_version}"
+    assumptions = {f"assumption:{plan.stage_id}:v{plan.plan_version}:{i}" for i in range(len(plan.assumptions))}
+    evidence_objects = {"evidence:" + ref for ref in known_evidence}
+    mutable = {stage_ref, approach_ref} | assumptions | evidence_objects
+    if route == Route.REPLAN_TODO:
+        mutable.add(todo_ref)
+    allowed = mutable | {todo_ref, f"task:{state.contract.task_id}:v{state.contract.version}"}
+    _require(set(decision.preserve) <= allowed and set(decision.invalidate) <= mutable,
+             "保留/失效范围含未知对象，或试图删除原始任务义务")
+    if route in (Route.REPAIR, Route.RETRY_CHECK):
+        _require(not set(decision.invalidate) & ({stage_ref, approach_ref} | assumptions),
+                 "保留方案的修复/检查重试不能同时使阶段或前提失效")
+    if decision.change_strategy:
+        _require(route in (Route.REPLAN_STAGE, Route.INVESTIGATE, Route.WAIT), "改变调查方法只能重规划、调查或等待")
     if route == Route.ADVANCE:
         _require(verdict.stage_status == CheckStatus.PASS, "ADVANCE 要求阶段已通过")
     elif route == Route.REPAIR:
@@ -189,6 +225,7 @@ def _feedback(state: RunState, event: ApplyFeedback) -> dict[str, object]:
                  "REPAIR 需要尚未完成且存在失败的验证结果")
         _require(not attempt.outcome.reported_assumption_changes
                  and attempt.outcome.status != "needs_replan", "前提已改变，不能沿用阶段计划修复")
+        _require(not any(d.invalidated_assumptions for d in verdict.diagnoses), "检查已否定前提，不能沿用阶段计划修复")
     elif route == Route.RETRY_CHECK:
         _require(verdict.todo_status != CheckStatus.PASS
                  and any(s in (CheckStatus.ERROR, CheckStatus.INCONCLUSIVE)

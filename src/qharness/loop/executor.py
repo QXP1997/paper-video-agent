@@ -23,7 +23,7 @@ class Executor:
             raise LoopConfigurationError("Executor 组件必须属于同一 Run")
         self.actor, self.verifier, self.repository = actor, verifier, actor.repository
         self.context, self.config = actor.tools.context, actor.config
-        self.planner = Planner(actor.model, self.context)
+        self.planner = Planner(actor.model, self.context, progress=verifier.progress)
         self.router = router or FeedbackRouter(self.config)
         self._lock = asyncio.Lock()
 
@@ -79,14 +79,15 @@ class Executor:
                             continue
                         if len(state.attempts) >= self.config.max_stage_attempts:
                             return await self._wait("阶段尝试预算已到，保留未完成任务")
-                        await self.planner.stage(state, observations=notes)
+                        await self.planner.stage(state, observations=notes, checks=checks)
                     elif state.phase == Phase.ACTING:
                         await self.actor.run(stream=stream,
                             context_observations=(*notes, *await self.planner.evidence_context(state)))
                     elif state.phase == Phase.VERIFYING:
                         if state.attempts[-1].outcome.status == OutcomeStatus.BLOCKED:
                             return await self._wait("Actor 阻塞：" + state.attempts[-1].outcome.summary)
-                        await self.verifier.verify_stage(self.verification_id(state), checks.stage_checks(state), judge=judge)
+                        await self.verifier.verify_stage(self.verification_id(state), checks.stage_checks(state),
+                                                         judge=judge, current_specs=checks.specs)
                     elif state.phase == Phase.ROUTING:
                         decision = self.router.decide(state)
                         # 模型/扩展路由不得跳过原 reducer 的身份与完成语义校验。
