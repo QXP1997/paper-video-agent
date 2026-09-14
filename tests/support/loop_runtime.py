@@ -57,3 +57,12 @@ class LoopRuntime:
     def close(self):
         self.database.close()
         self.temporary.cleanup()
+
+    def attach_history(self):
+        from qharness.workspace import DulwichFileVersionStore, SqlAlchemyWorkspaceHistoryRepository, WorkspaceMutationService
+        history = SqlAlchemyWorkspaceHistoryRepository(self.database.session_factory, tenant_id="tenant",
+            workspace_id="workspace", local_root=self.root)
+        versions = DulwichFileVersionStore(self.root / "versions", tenant_id="tenant", workspace_id="workspace")
+        service = WorkspaceMutationService(self.context.workspace, history, versions, run_id=self.context.run_id)
+        self.context.mutation_service = service
+        return service

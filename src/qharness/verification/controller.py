@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from qharness.exception import LoopConfigurationError, LoopExecutionError, WorkspaceError
 from qharness.loop.config import Role
@@ -14,6 +15,31 @@ from qharness.verification.contracts import CheckEvidence, CheckSpec, FailureBun
 from qharness.verification.evidence import combine
 from qharness.verification.runner import CheckRunner
 from qharness.workspace.version import workspace_fingerprint
+
+
+@dataclass(frozen=True)
+class CheckCatalog:
+    """应用维护的检查目录；只按明确目标匹配，不把任意成功命令绑定到新目标。"""
+    specs: tuple[CheckSpec, ...]
+
+    def __post_init__(self):
+        specs = tuple(CheckSpec.model_validate(s) for s in self.specs)
+        if len({s.id for s in specs}) != len(specs):
+            raise LoopConfigurationError("检查目录 ID 不能重复")
+        object.__setattr__(self, "specs", specs)
+
+    def stage_checks(self, state):
+        plan = state.attempts[-1].plan
+        todo = next(t.todo for t in state.todos if t.todo.id == plan.todo_id)
+        targets = {Scope.STAGE: set(plan.expected_results), Scope.TODO: set(todo.acceptance_refs) | set(todo.done_when)}
+        return tuple(s for s in self.specs if s.scope in targets and set(s.targets) <= targets[s.scope])
+
+    def task_checks(self, state):
+        return tuple(s for s in self.specs if s.scope == Scope.TASK)
+
+    def context(self):
+        return encode({"available_checks": [s.model_dump(mode="json") for s in self.specs],
+            "instruction": "检查由应用维护；规划可验证的目标，不能削弱任务。未被目录覆盖的结果需补充检查，不能自行宣称通过。"})
 
 
 class VerificationController:

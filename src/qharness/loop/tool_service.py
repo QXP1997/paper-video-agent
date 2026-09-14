@@ -38,6 +38,8 @@ class ToolService:
     async def execute_check(self, call_id: str, arguments: Any, *, check_binding: dict,
                             expected_version: int) -> ToolExecutionResult:
         """仅供受信任 CheckRunner 使用，不加入模型可调用工具列表。"""
+        if await asyncio.to_thread(self.repository.unresolved_calls):
+            raise LoopExecutionError("存在未知的已派发调用，不能继续派发检查", code="unknown")
         return await self._execute(call_id, "run_command", arguments, expected_version=expected_version,
                                    check_binding=check_binding)
 

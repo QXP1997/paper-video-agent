@@ -6,7 +6,7 @@ from qharness.loop.models import (
     RecordStageVerdict, RecordTaskVerdict, ReopenTodos, ReplaceTodoPlan, Resume,
     Route, RunState, Scope, StageAttempt, StageIdentity, StageKind, StageOutcome,
     StagePlan, StageVerdict, StartStage, SubmitOutcome, TaskContract, TaskVerdict,
-    Terminate, Todo, TodoPlan, TodoState, TodoStatus, Wait,
+    Terminate, Todo, TodoPlan, TodoPlanPatch, TodoState, TodoStatus, Wait,
 )
 from qharness.loop.transitions import create_run, reduce
 
@@ -16,5 +16,5 @@ __all__ = [
     "RecordStageVerdict", "RecordTaskVerdict", "ReopenTodos", "ReplaceTodoPlan", "Resume",
     "Route", "RunState", "Scope", "StageAttempt", "StageIdentity", "StageKind", "StageOutcome",
     "StagePlan", "StageVerdict", "StartStage", "SubmitOutcome", "TaskContract", "TaskVerdict",
-    "Terminate", "Todo", "TodoPlan", "TodoState", "TodoStatus", "Wait", "create_run", "reduce",
+    "Terminate", "Todo", "TodoPlan", "TodoPlanPatch", "TodoState", "TodoStatus", "Wait", "create_run", "reduce",
 ]

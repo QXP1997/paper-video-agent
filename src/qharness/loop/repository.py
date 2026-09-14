@@ -430,6 +430,13 @@ class LoopRepository:
                 counts[name] = counts.get(name, 0) + 1
             return counts
 
+    def unresolved_calls(self) -> tuple[str, ...]:
+        """已派发而未确定结束的调用；不能换一个逻辑 ID 就绕过未知结果。"""
+        with self._session() as session:
+            return tuple(f"{kind}:{call_id}" for record, kind in ((ToolCallRecord, "tool"), (ModelCallRecord, "model"))
+                         for call_id in session.scalars(select(record.call_id).where(
+                             record.run_key == self.key, record.status == "dispatched")))
+
     def model_trace(self, call_id: str) -> list[dict]:
         with self._session() as session:
             call = session.get(ModelCallRecord, (self.key, call_id))

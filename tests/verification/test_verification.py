@@ -28,6 +28,7 @@ class InterpretationTests(unittest.TestCase):
             ("unittest", 0, "Ran 2 tests in 0s\nOK (skipped=2)\n", "inconclusive"),
             ("unittest", 1, "Ran 2 tests in 0s\nFAILED (errors=1)\n", "error"),
             ("unittest", 1, PASS_LOG, "error"),
+            ("unittest", 127, "command not found", "error"),
             ("pytest", 5, "no tests ran in 0.01s", "inconclusive"),
             ("pytest", 2, "ImportError", "error"),
             ("pytest", 0, "================ 2 passed in 0.01s ================\n", "pass"),

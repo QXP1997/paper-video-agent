@@ -1,6 +1,6 @@
 # QHarness Agent Loop 实现计划
 
-> 状态：批次 1—4 已实现并通过离线行为检查；批次 5—8 待实现（更新于 2026-09-14）<br>
+> 状态：批次 1—5 已实现并通过离线行为检查；批次 6—8 待实现（更新于 2026-09-14）<br>
 > 制定日期：2026-09-13  
 > 代码基线：HEAD `8ff37fe` 及当日工作区  
 > 设计依据：[Agent Loop 文献综述与 QHarness 设计建议](./Agent-Loop文献综述与QHarness设计建议.md)  
@@ -104,14 +104,14 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 **目的：** 从用户任务开始，经过动态阶段执行，最终由 Task 验收结束。
 
-- [ ] Global Planner 生成初步 TodoPlan，支持有据的 TodoPlanPatch。
-- [ ] Todo 推进器选择依赖满足的工作项，识别真实阻塞和依赖错误。
-- [ ] Stage Planner 根据当前 Todo、未决问题与反馈生成阶段目标、预期结果、addresses 和交回条件。
-- [ ] Executor 连接阶段规划、Actor、Verifier 与基础 Feedback Router。
-- [ ] 实现 ADVANCE / REPAIR / INVESTIGATE / REPLAN_STAGE / REPLAN_TODO，以及 RETRY_CHECK / WAIT / TERMINATE。
-- [ ] REPAIR 保留有效计划；RETRY_CHECK 只重试检查；其他路由明确调整范围。
-- [ ] Todo 完成后推进下一项，全部完成后整体验收；遗漏或回归重开相应 Todo。
-- [ ] 将上述逻辑落到统一状态机，提供一次调用启动任务的完整示例。
+- [x] Global Planner 生成初步 TodoPlan，支持有据的 TodoPlanPatch。
+- [x] Todo 推进器选择依赖满足的工作项，识别真实阻塞和依赖错误。
+- [x] Stage Planner 根据当前 Todo、未决问题与反馈生成阶段目标、预期结果、addresses 和交回条件。
+- [x] Executor 连接阶段规划、Actor、Verifier 与基础 Feedback Router。
+- [x] 实现 ADVANCE / REPAIR / INVESTIGATE / REPLAN_STAGE / REPLAN_TODO，以及 RETRY_CHECK / WAIT / TERMINATE。
+- [x] REPAIR 保留有效计划；RETRY_CHECK 只重试检查；其他路由明确调整范围。
+- [x] Todo 完成后推进下一项，全部完成后整体验收；遗漏或回归重开相应 Todo。
+- [x] 将上述逻辑落到统一状态机，提供一次调用启动任务的完整示例。
 
 主要位置：`loop/planner.py`、`loop/stage_planner.py`、`loop/executor.py`、`loop/feedback.py`、`loop/controller.py`、`tests/loop/test_task_flow.py`。
 
@@ -410,7 +410,72 @@ report = services.repository.read_artifact(services.verifier.report_ref("verify-
 
 这些是离线行为验证，检查输出使用既有可控沙箱；没有把它们描述为真实模型或 SRT 的端到端评测。真实环境与跨任务效果仍须在后续联调和批次 8 验收。
 
-**下一步为批次 5：Planner + Executor，贯通整条推理主线。** 接上初步 Todo 规划、动态 Stage 规划、Actor、当前验证器和反馈路由；不再重新实现各角色的调用与检查执行逻辑。
+上述为批次 4 交付记录；完整任务调度现已由批次 5 串联。
+
+### 5.5 批次 5
+
+2026-09-14 完成 Planner + Executor 主线，累计 **133 项离线测试通过，其中本批新增 18 项任务流程测试**。应用调用一次 Executor 即可从 TaskContract 经初步 Todo、动态阶段、Actor、Verifier 和反馈路由运行至完成、等待或终止。
+
+本批复用原 ModelService、ContextCompiler、Actor、VerificationController、RunState/reducer 和 LoopRepository。新增生产文件仅为 `loop/planner.py`、`loop/executor.py`、`loop/feedback.py`；全局规划、阶段规划及 Todo 选择在 Planner 内复用同一角色调用机制，没有为文件清单中的 stage_planner/controller 再建薄包装。受信任检查目录 CheckCatalog 扩展在已有 verification/controller.py 中，没有新增数据库表或迁移版本。
+
+**运行入口：**
+
+```python
+from qharness.run import create_loop_services
+from qharness.verification import CheckCatalog
+
+services = create_loop_services(context, backend=backend, executor=tool_executor,
+    database_manager=database, config=loop_config, contract=task_contract)
+state = await services.executor.run(
+    CheckCatalog(tuple(trusted_check_specs)),
+    observations=(initial_workspace_summary,),
+    stream=False,
+    judge=False,
+)
+```
+
+TaskContract 仍由应用根据用户任务建立；检查定义、输入依赖和环境身份遵循第 5.4 节。CheckCatalog 按明确 targets 选择检查，原定义同时进入 Planner 上下文，帮助模型制定可验收的阶段。它不会因为模型临时改写预期结果，就自动把一个已有成功命令绑定到新目标；未覆盖的目标仍交给 Verifier 判为 INCONCLUSIVE。模型和应用可以协作补充检查，但检查的可信授权边界不变。
+
+**调度及完成语义：**
+
+- 首次运行调用 Global Planner，输出经过契约覆盖、依赖图和初始版本校验的 TodoPlan 后，沿用 repository.install_state。已有 Run 不重新初始化计划或预算。
+- Todo 选择按依赖是否通过确定；清单顺序只用于在多个就绪 Todo 中选择，不能跳过依赖。当前 Todo 尚未完成时，ADVANCE、修复和调查继续围绕它进行。
+- Stage Planner 接收当前 Todo、未决问题、进展记录、反馈和最近的真实检查输出；输出先用原 reducer 预检，再提交 StartStage。非法输出允许有限次协议修正，每次仍计入模型预算。
+- Actor 独立运行。REPAIR 不调用 Stage Planner，完整复用原 StagePlan，仅分配新的 Attempt；最近的实际失败日志会回填修复上下文，旧证据只作历史依据，不被当成新的通过凭据。
+- Verifier 提交 StageVerdict 后，基础路由选 ADVANCE、REPAIR、INVESTIGATE、REPLAN_STAGE、REPLAN_TODO、RETRY_CHECK 或 WAIT。RETRY_CHECK 留在当前 Attempt 的 VERIFYING，不重复 Actor 和阶段规划。REPLAN_STAGE 保留 Stage ID 并递增计划版本；INVESTIGATE 建立当前 Todo 的新调查阶段。
+- 基础策略在有明确失败、没有报告前提改变时允许局部修复；修复上限后调查，前提变化时先修订阶段，阶段修订上限后可凭当前证据重新分解 Todo。任务分解修订也有上限。该策略还不是批次 6 的精细错误分层或自适应粒度算法。
+- TodoPlanPatch 包含 base_version、修订后的 plan、reason 和 evidence_refs。版本必须匹配、内容必须实际改变、证据必须来自本次反馈并能在当前 Run 读取；原 TaskContract 不变。复用 ReplaceTodoPlan 对保留/新增 Todo 和依赖失效的处理，不能原地削弱旧 Todo 的完成义务。Patch 同时保存在原 Artifact 表供核对。
+- 规划边界调用现有 refresh 重开失效 Todo；全部 Todo 通过后运行独立 Task 检查。集成 FAIL 会重开受影响 Todo，再回到规划/执行；验收证据缺失会补查或等待，不把缺失证据等同于业务回归。
+- WAIT 保留当前恢复位置，不会自动循环唤醒；应用可通过已有 Resume 和验证/反馈事件继续协调。TERMINATE 可由应用显式调用 executor.terminate(reason)，或由受信任的 FeedbackRouter 扩展返回终止决策。所有路由最终均受原 reducer 校验约束。
+
+**预算与执行边界：**
+
+`LoopConfig` 和 `config/loop.example.toml` 增加 max_stage_attempts、max_stage_repairs、max_stage_replans、max_todo_replans、max_check_retries、max_run_events；次数从已有状态和历史推导，服务重建或 Resume 不清零。旧配置通过默认值读取；原模型/工具总预算、SDK 重试控制和审批机制继续生效。
+
+模型/工具存在已派发但未确定的调用时，Executor 进入 WAITING。同一轮某个检查效果未知时，原 ToolService 也阻止后续检查派发，不能用新的调用 ID 绕过未知效果。取消会停止新行动；已发生的效果仍以账本为准。状态过期、身份冲突和存储损坏会明确报错，不被包装成成功状态。
+
+首次 TodoPlan 尚未建立便遇到模型错误或取消时，返回初始化异常，保留已有调用账本；不能虚构一组 Todo 以制造可等待的 RunState。初始 RunService/收件箱和完整跨进程恢复语义继续由批次 7 处理。
+
+本批只有进程内 Executor 锁和原数据库 CAS/调用身份保护，不声明跨进程单写者接管已完成。WAIT 的外部条件解除、未知调用核对、审批回复与 Steering 仍需应用通过现有接口协调；Resume 本身不会清空重试预算或证明未知效果已消失。重入时应保持同一检查目录、grounding 和流模式，改变调用绑定会被账本拒绝。上下文继续采用现有容量边界，容量不足会等待或报错，不暗中丢弃验收要求。
+
+**已验证轨迹：**
+
+1. 初步 Todo → 调查通过但 Todo 失败 → 实施失败 → 完整保留 StagePlan 修复 → Todo 通过 → 独立 Task PASS。
+2. Todo 全通过 → Task 集成 FAIL → 重开相关 Todo → 再规划/执行 → Task PASS。
+3. 临时检查错误只重试检查；持续错误和最终覆盖不足达到上限后等待。
+4. 前提变化触发同 ID 的 Stage 修订；局部修复上限触发调查；有据的 TodoPlanPatch 替换受影响工作项，保留未改动项和原始验收覆盖。
+5. 环形初始计划先修正才允许行动；前向依赖按就绪状态选 Todo；伪造 Patch 证据不能替换计划。
+6. 规划中取消、Actor 阻塞、未知检查、完成后重入、阶段预算跨 Resume 保留，以及从持久 REPAIR 状态直接进入新 Actor 尝试。
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe -X utf8 examples/19_task_executor.py
+.\.venv\Scripts\python.exe -X utf8 examples/19_task_executor.py --integration-failure
+```
+
+示例 19 外部只调用一次 `services.executor.run()`，不手工安排 Stage/验证/反馈事件。它复用 ScriptedModelBackend 和可控 Sandbox Fixture，文件通过原 write_file/WorkspaceMutationService 真实落盘，检查返回预设规则下的结果。此结果证明控制流程与调用边界，不能代替真实模型、真实测试进程或 SRT 端到端效果评测。
+
+**下一步为批次 6：落实三项推理改进。** 在当前反馈与规划模块上实现更细的错误分层、动态阶段粒度及缺口关联/无进展判定，并加入配置开关和对照实验；继续复用当前完整执行主线。
 
 ## 6. 进度维护规则
 

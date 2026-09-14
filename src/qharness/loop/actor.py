@@ -30,7 +30,7 @@ class Actor:
         self._lock = asyncio.Lock()
 
     async def run(self, plan: StagePlan | None = None, *, attempt_id: str | None = None,
-                  stream: bool = False) -> StageOutcome:
+                  stream: bool = False, context_observations=()) -> StageOutcome:
         async with self._lock:
             state = (await asyncio.to_thread(self.repository.snapshot))["state"]
             if state is None:
@@ -50,12 +50,12 @@ class Actor:
             if state.phase != Phase.ACTING:
                 raise LoopConfigurationError("当前状态不允许执行阶段")
             try:
-                return await self._run(state, stream=stream)
+                return await self._run(state, stream=stream, context_observations=context_observations)
             except asyncio.CancelledError:
                 self.tools.context.cancel()
                 raise
 
-    async def _run(self, state, *, stream):
+    async def _run(self, state, *, stream, context_observations=()):
         attempt = state.attempts[-1]
         plan = attempt.plan
         identity = attempt.identity.model_dump()
@@ -77,7 +77,7 @@ class Actor:
                 return await handoff(stopped(OutcomeStatus.BLOCKED, "运行已取消，停止新行动"))
             call_id = "actor-" + digest([attempt.attempt_id, turn])
             try:
-                result = await self.model.call(call_id, Role.ACTOR, messages=history,
+                result = await self.model.call(call_id, Role.ACTOR, messages=history, observations=context_observations,
                     tools=self.tools.executor.registry.definitions(), stream=stream,
                     cancellation_event=self.tools.context.cancellation_event, expected_version=state.version)
             except asyncio.CancelledError:

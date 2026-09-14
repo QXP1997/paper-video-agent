@@ -41,6 +41,8 @@ def interpret(spec: CheckSpec, result: ToolExecutionResult) -> CheckObservation:
             return answer(CheckStatus.FAIL, "命令业务断言失败", signature=digest([code, log]))
         return answer(CheckStatus.ERROR, f"未定义的命令失败退出码：{code}")
     if spec.kind == CheckKind.UNITTEST:
+        if code not in (0, 1):
+            return answer(CheckStatus.ERROR, f"unittest 未正常执行，退出码：{code}")
         ran = re.findall(r"(?m)^Ran (\d+) tests? in .+$", log)
         endings = re.findall(r"(?m)^(OK(?: \([^\n]*\))?|FAILED \([^\n]*\))\s*$", log)
         if len(ran) != 1 or len(endings) != 1:

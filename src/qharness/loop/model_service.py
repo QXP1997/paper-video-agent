@@ -10,7 +10,7 @@ from qharness.backends.base import ModelBackend
 from qharness.exception import LoopConfigurationError, LoopExecutionError, ModelBackendError
 from qharness.loop.config import Role
 from qharness.loop.context import ContextCompiler
-from qharness.loop.models import Phase, StageOutcome, StagePlan, StageVerdict, TaskVerdict, TodoPlan
+from qharness.loop.models import Phase, Route, StageOutcome, StagePlan, StageVerdict, TaskVerdict, TodoPlan, TodoPlanPatch
 from qharness.loop.repository import LoopRepository, response_from_dict
 from qharness.model.models import ChatMessage, ChatResponse, ToolDefinition, ModelEventType
 
@@ -37,6 +37,7 @@ class ModelService:
         cancellation_event: asyncio.Event | None = None,
         stream: bool = False,
         expected_version: int | None = None,
+        plan_patch: bool = False,
     ) -> RoleResult:
         role = Role(role)
         snapshot = await asyncio.to_thread(self.repository.snapshot)
@@ -47,7 +48,10 @@ class ModelService:
             raise LoopExecutionError("阶段状态已改变，拒绝旧 Actor 调用", code="stale_context")
         if task_check and role != Role.JUDGE:
             raise LoopConfigurationError("只有 Judge 可以执行 Task 验证")
-        schema = {Role.TODO_PLANNER: TodoPlan, Role.STAGE_PLANNER: StagePlan,
+        if plan_patch and (role != Role.TODO_PLANNER or state is None or state.phase != Phase.PLANNING
+                           or state.pending_decision is None or state.pending_decision.route != Route.REPLAN_TODO):
+            raise LoopConfigurationError("仅允许在 REPLAN_TODO 后请求计划修订")
+        schema = {Role.TODO_PLANNER: TodoPlanPatch if plan_patch else TodoPlan, Role.STAGE_PLANNER: StagePlan,
                   Role.ACTOR: StageOutcome, Role.JUDGE: TaskVerdict if task_check else StageVerdict}[role]
         stage = None
         if role == Role.ACTOR or (role == Role.JUDGE and not task_check):
@@ -91,6 +95,14 @@ class ModelService:
             value = schema.model_validate_json(response.message.content or "")
             if isinstance(value, TodoPlan):
                 value.validate_contract(snapshot["contract"])
+            if isinstance(value, TodoPlanPatch):
+                value.plan.validate_contract(snapshot["contract"])
+                if value.base_version != state.todo_plan.version or value.plan.version != value.base_version + 1:
+                    raise ValueError("TodoPlanPatch 版本不正确")
+                if value.plan.todos == state.todo_plan.todos:
+                    raise ValueError("TodoPlanPatch 必须实际调整计划，不能只递增版本")
+                if not set(value.evidence_refs) <= set(state.pending_decision.evidence_refs):
+                    raise ValueError("计划修订只能引用本次反馈中的证据")
             if isinstance(value, StagePlan) and (value.todo_id != todo_id or
                 value.todo_version != next(t.todo.version for t in state.todos if t.todo.id == todo_id)):
                 raise ValueError("阶段计划属于其他 Todo 或旧版本")

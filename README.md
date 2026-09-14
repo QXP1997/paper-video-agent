@@ -123,7 +123,7 @@ Dulwich 与操作数据库的存储方式不同：数据库是全局共用的一
 
 ## Agent Loop 实现进度
 
-已完成[实现计划](docs/Agent-Loop实现计划.md)的批次 1—4：推理契约、状态转换、共享角色调用、基础上下文、持久账本、单阶段 Action Agent Loop，以及 Stage / Todo / Task 验证器。给定 StagePlan 后，Actor 执行模型决策、工具批次和观察回填；Verifier 分别核对阶段预期、Todo 完成条件和任务原始要求。
+已完成[实现计划](docs/Agent-Loop实现计划.md)的批次 1—5：在推理契约、调用账本、Actor 和三层验证器之上，Planner / Executor 已串起完整任务主线。应用提供原始 TaskContract 和受信任的 CheckCatalog，调用 `await services.executor.run(checks)` 后，会生成初步 Todo、动态规划阶段、执行行动、验证和选择反馈，最终返回 COMPLETED / WAITING / TERMINATED 对应的 RunState。
 
 `qharness.run.create_loop_services()` 在已有 RunContext、ModelBackend、ToolExecutor 和 DatabaseManager 上装配调用服务。原独立模型及工具入口继续可用；Loop 请求关闭 SDK 内部重试，由角色调用服务逐次计量。`config/loop.example.toml` 配置 Loop，工具配置与 None 继承语义仍沿用 `tool.toml`。
 
@@ -135,9 +135,11 @@ Dulwich 与操作数据库的存储方式不同：数据库是全局共用的一
 .\.venv\Scripts\python.exe -X utf8 examples/16_loop_calls.py
 .\.venv\Scripts\python.exe -X utf8 examples/18_verification.py
 .\.venv\Scripts\python.exe -X utf8 examples/18_verification.py --integration-failure
+.\.venv\Scripts\python.exe -X utf8 examples/19_task_executor.py
+.\.venv\Scripts\python.exe -X utf8 examples/19_task_executor.py --integration-failure
 ```
 
-累计 115 项离线测试通过，包含实际文件的“读取 → 回归失败 → 修改 → 回归通过”轨迹，以及 29 项验证专项测试。示例 15 展示三个完成边界，示例 16 展示调用账本，示例 18 用可控沙箱输出演示独立验收及集成失败后的 Todo 重开；示例 17 接入已配置的真实 Backend 与 SRT：
+累计 133 项离线测试通过，包含 29 项验证专项测试和本批新增的 18 项任务流程测试。示例 19 用一次 Executor 调用跑完“调查 → 实施失败 → 保留方案修复 → Todo 通过 → Task 验收”；开启 integration-failure 可看到最终集成失败后继续修复。文件和历史真实落盘，模型及检查输出使用可控 Fixture。示例 17 接入已配置的真实 Backend 与 SRT：
 
 ```powershell
 .\.venv\Scripts\python.exe examples/17_stage_actor.py --stream
@@ -147,7 +149,9 @@ Dulwich 与操作数据库的存储方式不同：数据库是全局共用的一
 
 Actor 只交回 candidate / needs_replan / blocked / stalled，不把 Todo 或 Task 标成完成。装配结果现在提供 `services.verifier.verify_stage()` / `verify_task()`，检查继续走已有 ToolService、工具预算和 SRT 沙箱；证据、检查意图和 Failure Bundle 复用 Artifact 表，不增加数据库表。模型 Judge 可补充语义审查，但不能覆盖确定性失败或补出缺失证据。
 
-检查定义由应用提供 `CheckSpec`：Stage 的 targets 对应 expected_results，Todo 对应 acceptance_refs 和 done_when，Task 对应原始 criteria 和 constraints。检查输入必须包含实现、测试和配置；依赖未知时默认保守扫描。应用还应设置 `context.metadata["verification_environment"]` 为运行时、依赖及外部服务版本的稳定身份，或向 CheckRunner 注入动态身份提供器。文件、检查定义或环境变化会使旧证据失效；规划边界调用 `verifier.refresh(specs)` 可重开相关 Todo。完整 Planner / Executor 主线是下一批的内容，具体接口和边界见[实现计划第 5.4 节](docs/Agent-Loop实现计划.md#54-批次-4)。真实模型与 SRT 的端到端验收尚未进行。
+检查定义由应用提供 `CheckSpec`：Stage 的 targets 对应 expected_results，Todo 对应 acceptance_refs 和 done_when，Task 对应原始 criteria 和 constraints，再组成 `CheckCatalog(tuple(specs))`。检查输入必须包含实现、测试和配置；依赖未知时默认保守扫描。应用还应设置 `context.metadata["verification_environment"]` 为运行时、依赖及外部服务版本的稳定身份，或向 CheckRunner 注入动态身份提供器。Executor 在规划边界调用 `verifier.refresh()` 重开失效 Todo；Task 使用独立检查重新验收。
+
+REPAIR 复用完整 StagePlan，只建立新 Attempt；RETRY_CHECK 不重新调用 Actor。规划和修复上下文会回填最近的完整检查输出。TodoPlanPatch 需绑定当前版本、修订理由和反馈证据，并保持原始验收覆盖。阶段次数、局部修复、重规划、检查重试和事件预算有明确上限；效果未知、预算或环境阻塞进入 WAITING，不伪称完成。具体接口及边界见[实现计划第 5.5 节](docs/Agent-Loop实现计划.md#55-批次-5)。完整恢复/Steering 和三项改进的实验策略仍按后续批次实施，真实模型与 SRT 的端到端验收尚未进行。
 
 数据库仍由应用级 DatabaseManager.initialize() 统一升级，新 revision 为 `0002_loop_ledger`。新增七张 Loop 表并保留工作区历史；已验证 SQLite 旧数据升级。工具返回的完整业务数据在 `ToolExecutionResult.data`，模型摘要在 `content`，持久输出引用在 `artifact_id`；外层 success 不代表 Shell 退出码为零。
 
@@ -173,7 +177,7 @@ src/qharness/resources/node/              托管 Node 下载地址、版本和�
 src/qharness/resources/srt/               固定版本 SRT 的 npm 清单与锁文件
 src/qharness/runtime/                     托管运行时清单、校验、安全安装与名称解析
 src/qharness/run/                         单次 Run 的租户、工作区、沙箱和取消上下文
-src/qharness/loop/                        推理契约、状态转换、角色调用、上下文、执行账本与阶段 Actor
+src/qharness/loop/                        推理契约、状态转换、调用账本、Planner、Actor、Executor 与反馈路由
 src/qharness/verification/                三层验证、检查解析、证据有效性与失败包
 src/qharness/workspace/                   路径守卫、SQLAlchemy 台账、Dulwich 历史、补丁与回滚
 src/qharness/sandbox/                     统一沙箱接口与 Anthropic SRT 后端

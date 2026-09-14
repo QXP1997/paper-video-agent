@@ -1,7 +1,7 @@
 """现有 ModelBackend 的离线替身；不会补全故意截断的流。"""
 
 from collections import deque
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from copy import deepcopy
 
 from qharness.backends.base import ModelBackend
@@ -14,7 +14,7 @@ StreamScript = tuple[ChatStreamEvent | Exception, ...]
 class ScriptedModelBackend(ModelBackend):
     supports_request_retry_control = True
 
-    def __init__(self, script: Iterable[ChatResponse | StreamScript | Exception]) -> None:
+    def __init__(self, script: Iterable[ChatResponse | StreamScript | Exception | Callable[[ChatRequest], ChatResponse]]) -> None:
         # 带 keyword-only 构造参数的生产异常不一定支持 deepcopy。
         self._script = deque(script)
         self.requests: list[ChatRequest] = []
@@ -27,6 +27,8 @@ class ScriptedModelBackend(ModelBackend):
         if not self._script:
             raise AssertionError("模型脚本已耗尽：发生了非预期的额外调用")
         step = self._script.popleft()
+        if callable(step):
+            step = step(deepcopy(request))  # 测试可根据控制器分配的 Attempt 身份生成固定角色输出。
         if isinstance(step, Exception):
             raise step
         return deepcopy(step) if isinstance(step, ChatResponse) else step

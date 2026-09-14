@@ -141,6 +141,14 @@ class TodoPlan(ContractModel):
             raise ValueError("TodoPlan 必须覆盖全部任务验收项，且不能引用未知验收项")
 
 
+class TodoPlanPatch(ContractModel):
+    """有版本和证据的全量计划修订；沿用 TodoPlan 与原 reducer 的失效传播。"""
+    base_version: Version
+    plan: TodoPlan
+    reason: Text
+    evidence_refs: tuple[Text, ...] = Field(min_length=1)
+
+
 class Question(ContractModel):
     id: Text
     description: Text

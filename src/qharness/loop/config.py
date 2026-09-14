@@ -50,6 +50,12 @@ class LoopConfig(ContractModel):
     max_protocol_corrections: int = Field(default=2, ge=0)
     max_parallel_reads: int = Field(default=4, ge=1)
     max_batch_calls: int = Field(default=16, ge=1)
+    max_stage_attempts: int = Field(default=64, ge=1)
+    max_stage_repairs: int = Field(default=2, ge=0)
+    max_stage_replans: int = Field(default=2, ge=0)
+    max_todo_replans: int = Field(default=2, ge=0)
+    max_check_retries: int = Field(default=2, ge=0)
+    max_run_events: int = Field(default=1024, ge=8)
 
     @model_validator(mode="after")
     def validate_policy(self):

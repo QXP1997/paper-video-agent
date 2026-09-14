@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from qharness.exception import LoopConfigurationError
 from qharness.loop.config import LoopConfig, ROLE_PROMPTS, Role
-from qharness.loop.models import RunState, StagePlan, TaskContract
+from qharness.loop.models import RunState, StagePlan, TaskContract, TodoPlanPatch
 from qharness.model.models import ChatMessage, ChatRequest, ToolDefinition
 
 
@@ -88,6 +88,9 @@ class ContextCompiler:
             "observations": list(observations), "output_schema": output_schema.model_json_schema(),
         }
         prompt = ROLE_PROMPTS[role]
+        if output_schema is TodoPlanPatch:
+            prompt = "根据当前 REPLAN_TODO 反馈输出 TodoPlanPatch，说明理由并引用反馈中的证据。" \
+                     "修订计划保持原任务验收覆盖，保留有效 Todo；更改完成义务须用新 Todo ID，不能削弱原始任务。"
         if self.config.prompt_version == "loop-roles-v1" and role == Role.ACTOR:
             prompt = "在当前 StagePlan 内使用工具推进工作；达到交回条件时输出 StageOutcome，不能自行宣布任务完成。"
         request = ChatRequest(
