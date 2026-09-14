@@ -1,6 +1,6 @@
 # QHarness Agent Loop 实现计划
 
-> 状态：批次 1—3 已实现并通过离线行为检查；批次 4—8 待实现<br>
+> 状态：批次 1—4 已实现并通过离线行为检查；批次 5—8 待实现（更新于 2026-09-14）<br>
 > 制定日期：2026-09-13  
 > 代码基线：HEAD `8ff37fe` 及当日工作区  
 > 设计依据：[Agent Loop 文献综述与 QHarness 设计建议](./Agent-Loop文献综述与QHarness设计建议.md)  
@@ -87,14 +87,14 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 **目的：** 用明确的检查结果驱动阶段和任务完成，供下一批 Executor 使用。
 
-- [ ] 实现 Check Runner，复用沙箱、工具策略、取消和预算。
-- [ ] 实现 PASS / FAIL / INCONCLUSIVE / ERROR 四态结果。
-- [ ] 实现 StageVerdict，同时包含阶段结果、Todo 状态、预期/实际差异和 ProgressDelta。
-- [ ] 实现 Task Verifier，核对原始要求覆盖、最终产物与必要集成行为。
-- [ ] 将证据绑定代码、检查定义和环境输入，相关变化后失效；未知依赖使用保守失效。
-- [ ] 处理零测试收集、原有失败、Flaky、检查环境错误和日志不完整。
-- [ ] 形成 Failure Bundle；缺证据先补采，检查错误不自动要求改业务代码。
-- [ ] 接入可选语义 Judge，保留 UNKNOWN / INCONCLUSIVE，确定性失败不可被模型评分覆盖。
+- [x] 实现 Check Runner，复用沙箱、工具策略、取消和预算。
+- [x] 实现 PASS / FAIL / INCONCLUSIVE / ERROR 四态结果。
+- [x] 实现 StageVerdict，同时包含阶段结果、Todo 状态、预期/实际差异和 ProgressDelta。
+- [x] 实现 Task Verifier，核对原始要求覆盖、最终产物与必要集成行为。
+- [x] 将证据绑定代码、检查定义和环境输入，相关变化后失效；未知依赖使用保守失效。
+- [x] 处理零测试收集、原有失败、Flaky、检查环境错误和日志不完整。
+- [x] 形成 Failure Bundle；缺证据先补采，检查错误不自动要求改业务代码。
+- [x] 接入可选语义 Judge，保留 UNKNOWN / INCONCLUSIVE，确定性失败不可被模型评分覆盖。
 
 主要位置：`verification/contracts.py`、`verification/runner.py`、`verification/controller.py`、`verification/evidence.py`、`tests/verification/`。
 
@@ -331,7 +331,86 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 Prompt 默认版本升级为 `loop-roles-v2`，保留 v1 供旧策略读取与原角色调用使用；不把已有 Run 的策略静默改成 v2。新增配置默认值可以用于读取旧快照，但策略、请求上下文或工具效果声明不一致时仍拒绝复用同一个逻辑调用；历史结果可通过原读取接口取得。建议新的行动任务使用新 Run 和 v2 策略。
 
-**下一步为批次 4：Stage / Todo / Task 验证与证据有效性。** 复用现有沙箱与工具调用边界执行检查，判定 PASS / FAIL / INCONCLUSIVE / ERROR，并把证据绑定到实际产物、检查定义和环境版本。
+上述为批次 3 交付记录；证据验证现已由批次 4 补齐。
+
+### 5.4 批次 4
+
+2026-09-14 完成 Stage / Todo / Task 验证与证据有效性，累计 **115 项离线测试通过，其中本批新增 29 项专项测试**。这批交付能实际运行检查、保存证据并提交验证事件的控制器；Planner / Executor 的全任务调度由下一批串联。
+
+复用与新增职责：
+
+| 位置 | 本批实现 |
+|---|---|
+| `loop/tool_service.py` | 增加仅供检查控制器调用的 execute_check；复用参数校验、Hook、审批策略、取消、预算与防重放 |
+| `loop/repository.py` | 复用 Artifact 表存储不可变检查意图、证据和报告；CAS 提交支持写锁内的文件前置条件复核 |
+| `workspace/version.py` | 提取共用文件扫描，增加不推进 HEAD 的内容/权限指纹；历史原有 ignore 规则继续保留 |
+| `verification/contracts.py` | CheckSpec、CheckEvidence、CheckObservation、QuestionConclusion、FailureBundle |
+| `verification/evidence.py` | unittest / pytest / 明确命令断言的四态解析与结果归约 |
+| `verification/runner.py` | 实际检查、稳定执行身份、重复检查、基线比较、文件/定义/环境有效性 |
+| `verification/controller.py` | 三层覆盖、ProgressDelta、可选 Judge、验证事件提交与失效 Todo 重开 |
+| `run/factory.py` | 原 create_loop_services 装配结果增加 verifier |
+| `examples/18_verification.py` | 复用现有离线 Fixture，演示最终通过与最终集成失败两条轨迹 |
+
+没有新建数据库表、迁移版本、Shell 执行器、模型协议或预算系统。数据库 head 仍为 `0002_loop_ledger`，原有独立工具与 Actor 调用方式保持兼容。
+
+**三个完成边界如何判定：**
+
+1. Stage 检查的 targets 必须指向当前 StagePlan.expected_results。每个预期都被有效 PASS 检查覆盖，阶段才通过。
+2. Todo 检查独立覆盖 acceptance_refs 和 done_when；只查验收 ID 而遗漏自然语言完成条件仍为 INCONCLUSIVE。调查检查可通过受信任的 QuestionConclusion 生成“已解决 / 已缩小 / 已排除”进展，并引用真实检查凭据；不会把调查结果当成代码修复完成。
+3. Task 重新执行自己的检查，覆盖原始 criteria 和 constraints，不能使用全部 Todo 的勾选代替最终检查。最终产物和集成行为由应用提供对应 CheckSpec。确认某个验收项失败会复用 reducer 重开相关 Todo 和依赖；原始约束失败会阻止整个任务完成，并保守重开 Todo。
+
+缺少检查或日志证据时返回 INCONCLUSIVE，报告包含没有证据引用的缺口项与补采建议，不虚构一个 Evidence ID。ERROR 表示检查没有给出可用业务结论，例如沙箱不可用、收集/运行错误、取消或效果未知。Failure Bundle 带检查原因、完整输出 Artifact 引用、基线标记及建议下一步；本批不代替 Executor 选择 REPAIR / INVESTIGATE 等路由。
+
+**调用与输入约定：**
+
+```python
+from qharness.verification import CheckSpec
+
+# 应用根据实际运行时、依赖和外部服务生成身份；不是让 Actor 填写一个任意标签。
+context.metadata["verification_environment"] = verified_environment_digest
+
+verdict = await services.verifier.verify_stage("verify-A1-1", [
+    CheckSpec(id="stage-regression", scope="stage", targets=stage_plan.expected_results,
+              command="python test_pagination.py", failure_exit_codes=(1,),
+              inputs=("pagination.py", "test_pagination.py")),
+    CheckSpec(id="todo-regression", scope="todo",
+              targets=(*todo.acceptance_refs, *todo.done_when),
+              command="python test_pagination.py", failure_exit_codes=(1,),
+              inputs=("pagination.py", "test_pagination.py")),
+])
+report = services.repository.read_artifact(services.verifier.report_ref("verify-A1-1"))
+```
+
+上例是分页任务的命令断言：脚本本身必须确实验证这些 targets，不能因为接口支持批量绑定就把任意成功命令标成覆盖全部需求。测试框架使用 `kind="unittest"` 或 `kind="pytest"`；普通 `command` 只在可信命令定义明确成功语义时使用，非零退出码默认 ERROR，显式声明的 failure_exit_codes 才表示业务断言 FAIL。
+
+检查定义、目标映射和环境身份由应用端或受信任的检查配置提供。模型可以建议检查，但不能直接替换这些定义、削弱 targets 或用自己的文字创建 PASS。`execute_check` 不注册为模型可见工具；Judge 仍经过已有 ModelService，消耗共享模型预算。
+
+**证据有效性与异常语义：**
+
+- 同时记录检查前后文件指纹、检查定义/版本、运行时/环境身份、Run 版本和 Attempt。检查运行、后续检查或 Judge 等待期间改变输入，会使旧结论失效；提交前再在数据库写锁内复核文件和检查定义。工具结果完成但证据尚未写入时进程中断，重建后也不能把旧结果重新绑定到新文件。
+- `inputs` 必须覆盖实现、测试、测试配置和锁文件等实际依赖；它是完整依赖声明，不只是模型最近改动的文件。未提供时保守扫描工作区普通文件，除 .git/.qharness 元数据外不采用 .gitignore，以免遗漏隐藏的代码或新增文件；链接/不可读输入无法可靠快照时不发放 PASS。扫描成本随工作区增大，已知依赖时应显式声明。
+- 工作区外的解释器、包环境、服务/数据集版本需要由 `verification_environment` 身份覆盖；也可用 `CheckRunner(tools, environment=provider)` 注入动态提供器。环境身份缺失属于装配错误，不默认为一个稳定环境。共享可变文件系统没有跨进程原子快照，本批的前后快照和提交 guard 不是文件系统事务；更强单写者/恢复协调继续按批次 7 实施。
+- `verifier.refresh(current_specs)` 在 PLANNING / VERIFYING_TASK 边界核对已通过 Todo 的凭据；文件、环境、检查定义改变或检查定义消失时，复用 ReopenTodos 传播失效。第五批应把它接到规划边界。独立 Task 检查始终基于当前输入重新验收。
+- 零测试、全跳过、全 expected failure、未知测试摘要和不完整沙箱日志不构成 PASS。工具给模型展示的摘要截断时，可读取完整 Artifact 判定；沙箱已丢弃的日志不能通过 Artifact 凭空恢复。测试异常按 ERROR 留待诊断，避免把环境问题直接路由成改业务代码。
+- `repetitions` 显式限定重复检查次数，结果、测试数量或失败签名不同则保守标记 Flaky / INCONCLUSIVE，不采用最后一次 PASS。超时/取消导致未知执行效果时立即停止重复派发，沿用原工具账本的未知结果边界。
+- `baselines={check_id: evidence_ref}` 比较同定义、同环境的既有稳定失败及失败签名。相同失败可标记 pre_existing，但仍保留 FAIL；不会因为“原来就红”而跳过验收，也不把所有失败归因于本次修改。基线可在修改前的调查阶段采集。
+- 对“不得修改测试”这样的约束，应提供受信任的原始测试摘要比对检查；仅把当前测试文件列入 inputs，不能证明 Actor 之前没有削弱过它。原始约束本身同样必须被 Task 检查覆盖。
+
+**语义 Judge 的定位：**
+
+`verify_stage(..., judge=True)` / `verify_task(..., judge=True)` 将证据和完整输出交给已有 Judge 角色。它可以确认检查的语义覆盖，或保留 ERROR / INCONCLUSIVE；不能覆盖确定性 FAIL，不能把缺证据变成 PASS，也不能将任意 evidence_refs 或 ProgressDelta 写入完成账本。确定性检查全绿但模型仍发现语义问题时保留 INCONCLUSIVE、要求补证；模型反对意见本身不升级为已证实的业务 FAIL。模型 JSON 不合法则沿用角色调用协议错误，不提交成功事件。
+
+已验证三层完成隔离、问题进展、覆盖遗漏、约束违反、任务集成退化、文件/环境/定义失效、提交时竞态、重建防重放、日志截断、Flaky、基线失败、取消、未知执行、预算共享、租户隔离，以及 Judge 不能捏造或覆盖证据。
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe -X utf8 examples/18_verification.py
+.\.venv\Scripts\python.exe -X utf8 examples/18_verification.py --integration-failure
+```
+
+这些是离线行为验证，检查输出使用既有可控沙箱；没有把它们描述为真实模型或 SRT 的端到端评测。真实环境与跨任务效果仍须在后续联调和批次 8 验收。
+
+**下一步为批次 5：Planner + Executor，贯通整条推理主线。** 接上初步 Todo 规划、动态 Stage 规划、Actor、当前验证器和反馈路由；不再重新实现各角色的调用与检查执行逻辑。
 
 ## 6. 进度维护规则
 

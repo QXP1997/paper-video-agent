@@ -32,17 +32,31 @@ class ToolService:
     async def execute(self, call_id: str, tool_name: str, arguments: Any, *, retry: bool = False,
                       expected_version: int | None = None) -> ToolExecutionResult:
         """call_id 是 Run 内稳定的逻辑调用身份；retry 只允许已证明未进 Handler 的失败。"""
+        return await self._execute(call_id, tool_name, arguments, retry=retry,
+                                   expected_version=expected_version)
+
+    async def execute_check(self, call_id: str, arguments: Any, *, check_binding: dict,
+                            expected_version: int) -> ToolExecutionResult:
+        """仅供受信任 CheckRunner 使用，不加入模型可调用工具列表。"""
+        return await self._execute(call_id, "run_command", arguments, expected_version=expected_version,
+                                   check_binding=check_binding)
+
+    async def _execute(self, call_id: str, tool_name: str, arguments: Any, *, retry: bool = False,
+                       expected_version: int | None = None, check_binding: dict | None = None):
         if self.context.cancelled:
             return ToolExecutionResult(call_id, tool_name, False, "运行已取消", 0, error_code="cancelled")
         snapshot = await asyncio.to_thread(self.repository.snapshot)
         state = snapshot["state"]
         if expected_version is not None and snapshot["version"] != expected_version:
             raise LoopExecutionError("阶段状态已改变，拒绝旧工具批次", code="stale_context")
-        if state is None or state.phase != Phase.ACTING:
-            raise LoopConfigurationError("工具调用必须处于 ACTING 阶段")
+        allowed = (Phase.VERIFYING, Phase.VERIFYING_TASK) if check_binding is not None else (Phase.ACTING,)
+        if state is None or state.phase not in allowed:
+            raise LoopConfigurationError("工具调用与当前执行/验证阶段不匹配")
         tool = self.executor.registry.get(tool_name)
         binding = {"run_version": snapshot["version"], "stage_attempt": state.active_attempt_id,
                    "tool_definition": digest(asdict(tool.to_definition())) if tool else None}
+        if check_binding is not None:
+            binding["verification"] = check_binding
         if tool is not None:
             binding["effect"] = str(tool.effect)
             binding["parallel_safe"] = tool.parallel_safe

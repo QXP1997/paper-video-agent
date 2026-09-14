@@ -45,6 +45,63 @@ _DEFAULT_IGNORE_PATTERNS = (
 VersionFile: TypeAlias = tuple[bytes, int]
 
 
+def _workspace_files(root: Path, *, conservative: bool = False):
+    """历史和证据共用扫描；验证未知依赖时不采纳项目的 ignore 规则。"""
+    ignore_spec = _load_ignore_spec(root)
+    def on_error(error):
+        raise WorkspaceHistoryError("无法完整扫描工作区") from error
+    for directory, directory_names, file_names in os.walk(root, onerror=on_error):
+        allowed = []
+        for name in sorted(directory_names):
+            child = Path(directory) / name
+            if name.casefold() in {".git", ".qharness"}:
+                continue
+            if child.is_symlink() or (getattr(child.lstat(), "st_file_attributes", 0)
+                                     & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+                if conservative:
+                    raise WorkspaceHistoryError("未知依赖包含目录链接，需声明普通文件依赖")
+                continue
+            relative = child.relative_to(root).as_posix() + "/"
+            if not conservative and ignore_spec.is_ignored(relative) is True:
+                continue
+            allowed.append(name)
+        directory_names[:] = allowed
+        for name in sorted(file_names):
+            child = Path(directory) / name
+            if child.is_symlink() or not child.is_file():
+                if conservative:
+                    raise WorkspaceHistoryError("未知依赖包含非普通文件")
+                continue
+            if conservative or ignore_spec.is_ignored(child.relative_to(root).as_posix()) is not True:
+                yield child
+
+
+def workspace_fingerprint(workspace, inputs: tuple[str, ...] | None = None) -> str:
+    """磁盘内容与权限指纹，不推进 HEAD。None 保守扫描；声明依赖须覆盖测试和配置。
+
+    .git/.qharness 属于元数据，外部依赖由验证器的环境身份覆盖。
+    显式文件可尚不存在，后续创建该文件也会使证据失效。
+    """
+    paths = (list(_workspace_files(workspace.root, conservative=True)) if inputs is None else
+             [workspace.resolve_path(path, must_exist=False) for path in inputs])
+    fingerprint = hashlib.sha256()
+    for path in sorted(set(paths)):
+        relative = path.relative_to(workspace.root).as_posix().encode("utf-8")
+        fingerprint.update(len(relative).to_bytes(8, "big") + relative)
+        if not path.exists():
+            fingerprint.update(b"missing")
+            continue
+        if not path.is_file():
+            raise WorkspaceHistoryError("证据的显式输入必须为普通文件")
+        before = path.stat()
+        content = path.read_bytes()
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns, before.st_mode) != (after.st_size, after.st_mtime_ns, after.st_mode):
+            raise WorkspaceHistoryError("生成证据指纹期间输入发生变化")
+        fingerprint.update(str(stat.S_IMODE(after.st_mode)).encode("ascii") + b":" + hashlib.sha256(content).digest())
+    return fingerprint.hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class WorkspaceCommitResult:
     """创建或复用工作区 Commit 后返回的结果。"""
@@ -396,38 +453,16 @@ class DulwichFileVersionStore:
         """安全扫描普通文件；私有元数据和用户项目 .git 不进入历史。"""
 
         entries: dict[str, tuple[int, bytes]] = {}
-        ignore_spec = _load_ignore_spec(root)
-        for directory, directory_names, file_names in os.walk(root):
-            allowed_directories: list[str] = []
-            for name in sorted(directory_names):
-                child = Path(directory) / name
-                relative_directory = child.relative_to(root).as_posix() + "/"
-                if (
-                    name.casefold() in {".git", ".qharness"}
-                    or child.is_symlink()
-                    or ignore_spec.is_ignored(relative_directory) is True
-                ):
-                    continue
-                allowed_directories.append(name)
-            directory_names[:] = allowed_directories
-            for file_name in sorted(file_names):
-                file_path = Path(directory) / file_name
-                if file_path.is_symlink() or not file_path.is_file():
-                    continue
-                relative_path = file_path.relative_to(root).as_posix()
-                if ignore_spec.is_ignored(relative_path) is True:
-                    continue
-                try:
-                    content = file_path.read_bytes()
-                    file_mode = file_path.stat().st_mode
-                except OSError as error:
-                    raise WorkspaceHistoryError(
-                        f"无法为工作区创建版本快照：{relative_path}"
-                    ) from error
-                blob = Blob.from_string(content)
-                repository.object_store.add_object(blob)
-                mode = _git_mode(file_mode)
-                entries[relative_path] = (mode, blob.id)
+        for file_path in _workspace_files(root):
+            relative_path = file_path.relative_to(root).as_posix()
+            try:
+                content = file_path.read_bytes()
+                file_mode = file_path.stat().st_mode
+            except OSError as error:
+                raise WorkspaceHistoryError(f"无法为工作区创建版本快照：{relative_path}") from error
+            blob = Blob.from_string(content)
+            repository.object_store.add_object(blob)
+            entries[relative_path] = (_git_mode(file_mode), blob.id)
         return entries
 
     def _write_tree(

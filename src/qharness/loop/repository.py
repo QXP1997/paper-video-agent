@@ -222,11 +222,14 @@ class LoopRepository:
                 fail("只允许为同一契约安装初始状态")
             row.state, row.version = state.model_dump_json(), state.version
 
-    def apply(self, event: LoopEvent) -> RunState:
+    def apply(self, event: LoopEvent, *, guard=None) -> RunState:
+        """CAS 提交；可选受信任 guard 在写锁内复核外部前置条件。"""
         with self._write() as (_, row):
             if row.state is None:
                 fail("尚未安装 TodoPlan")
             state = reduce(RunState.model_validate_json(row.state), event)
+            if guard is not None:
+                guard()
             row.state, row.version = state.model_dump_json(), state.version
             return state
 
@@ -391,6 +394,24 @@ class LoopRepository:
             if hashlib.sha256(row.content.encode("utf-8")).hexdigest() != row.sha256:
                 fail("Artifact 内容摘要不匹配", "corrupt_artifact")
             return json.loads(row.content)
+
+    def put_artifact(self, artifact_id: str, value: Any, *, expected_version: int | None = None) -> str:
+        """复用不可变 Artifact 保存检查意图、证据与失败包；相同 ID 不可改写。"""
+        if len(artifact_id) != 64 or any(c not in "0123456789abcdef" for c in artifact_id):
+            fail("Artifact ID 必须为 SHA256 格式", "invalid_identity")
+        content = encode(value)
+        with self._write() as (session, run):
+            if expected_version is not None and run.version != expected_version:
+                fail("Artifact 基于过期 RunState", "stale_context")
+            row = session.get(ArtifactRecord, (self.key, artifact_id))
+            if row is not None:
+                if row.content != content:
+                    fail("不可改写已保存的 Artifact")
+                return artifact_id
+            session.add(ArtifactRecord(run_key=self.key, artifact_id=artifact_id, content=content,
+                sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(), size_bytes=len(content.encode("utf-8")),
+                media_type="application/json"))
+        return artifact_id
 
     def tool_result(self, call_id: str) -> ToolExecutionResult:
         with self._session() as session:
