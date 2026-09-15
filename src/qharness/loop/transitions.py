@@ -13,9 +13,9 @@ from pydantic import TypeAdapter, ValidationError
 from qharness.exception import LoopTransitionError
 from qharness.loop.models import (
     ApplyFeedback, CheckStatus, ContractModel, EvidenceLink, LoopEvent,
-    Phase, Question, RecordStageVerdict, RecordTaskVerdict, ReopenTodos,
+    Phase, Question, RecordStageVerdict, RecordTaskVerdict, RefreshContext, ReopenTodos,
     ReplaceTodoPlan, Resume, Route, RunState, StageAttempt, StageIdentity,
-    StageKind, StartStage, SubmitOutcome, TaskContract, Terminate, TodoPlan,
+    StageKind, StartStage, Steer, SubmitOutcome, TaskContract, Terminate, TodoPlan,
     TodoState, TodoStatus, Wait,
 )
 
@@ -338,6 +338,18 @@ def reduce(state: RunState, event: LoopEvent) -> RunState:
         elif isinstance(event, Resume):
             _phase(state, Phase.WAITING)
             updates = dict(phase=state.resume_phase, resume_phase=None, wait_reason=None)
+        elif isinstance(event, Steer):
+            constraints = tuple(dict.fromkeys((*state.contract.constraints, *event.constraints)))
+            _require(constraints != state.contract.constraints, "追加约束没有实际变化")
+            contract = _updated(state.contract, version=state.contract.version + 1, constraints=constraints)
+            todos, evidence = _invalidate(state.todos, state.satisfied_criteria, {t.todo.id for t in state.todos})
+            updates = dict(contract=contract, todos=todos, satisfied_criteria=evidence, phase=Phase.PLANNING,
+                           active_attempt_id=None, pending_decision=None, resume_phase=None, wait_reason=None)
+        elif isinstance(event, RefreshContext):
+            _phase(state, Phase.WAITING)
+            updates = dict(phase=Phase.PLANNING, active_attempt_id=None, pending_decision=None,
+                resume_phase=None, wait_reason=None, todos=tuple(
+                    _updated(t, status=TodoStatus.PENDING) if t.status == TodoStatus.ACTIVE else t for t in state.todos))
         elif isinstance(event, Terminate):
             updates = dict(phase=Phase.TERMINATED, resume_phase=None, wait_reason=None)
         else:

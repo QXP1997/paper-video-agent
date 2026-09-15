@@ -11,7 +11,7 @@ from qharness.exception import LoopConfigurationError, LoopExecutionError, Model
 from qharness.loop.config import Role
 from qharness.loop.context import ContextCompiler
 from qharness.loop.models import Phase, Route, StageOutcome, StagePlan, StageVerdict, TaskVerdict, TodoPlan, TodoPlanPatch
-from qharness.loop.repository import LoopRepository, response_from_dict
+from qharness.loop.repository import LoopRepository, digest, response_from_dict
 from qharness.model.models import ChatMessage, ChatResponse, ToolDefinition, ModelEventType
 
 
@@ -38,6 +38,7 @@ class ModelService:
         stream: bool = False,
         expected_version: int | None = None,
         plan_patch: bool = False,
+        replay_completed: bool = False,
     ) -> RoleResult:
         role = Role(role)
         snapshot = await asyncio.to_thread(self.repository.snapshot)
@@ -62,10 +63,27 @@ class ModelService:
             todo_id = stage.todo_id
         if task_check and (state is None or state.phase != Phase.VERIFYING_TASK):
             raise LoopConfigurationError("尚未到任务整体验收阶段")
+        if replay_completed and role == Role.ACTOR:
+            previous = await asyncio.to_thread(self.repository.call_record, "model", call_id)
+            if previous is not None:
+                if previous["role"] != role.value or previous["binding"]["stage_attempt"] != state.active_attempt_id:
+                    raise LoopExecutionError("历史模型调用不属于当前尝试", code="conflict")
+                if previous["status"] == "done":
+                    response = response_from_dict(previous["response"])
+                    output = None if response.message.tool_calls else schema.model_validate_json(response.message.content)
+                    if output is not None and any(getattr(output, k) != v for k, v in state.attempts[-1].identity.model_dump().items()):
+                        raise LoopExecutionError("历史产出身份不匹配", code="conflict")
+                    return RoleResult(response, output, True)
+                if previous["status"] != "dispatched":
+                    raise LoopExecutionError("历史角色调用未产出有效结果", code="model_failed")
         request, input_tokens = self.compiler.compile(
             contract=snapshot["contract"], role=role, output_schema=schema, state=state,
             todo_id=todo_id, stage=stage, observations=observations, messages=messages, tools=tools,
         )
+        if self.compiler.compacted_source is not None:
+            ref, source, manifest = self.compiler.compacted_source
+            await asyncio.to_thread(self.repository.put_artifact, ref, source)
+            await asyncio.to_thread(self.repository.put_artifact, digest(["context-manifest", call_id]), manifest)
         request = self.backend.resolve_request(request)
         protected = {"model", "messages", "tools", "tool_choice", "response_format", "stream",
                      "max_tokens", "max_completion_tokens", "max_output_tokens", "n"}

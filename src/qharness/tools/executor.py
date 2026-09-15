@@ -48,6 +48,7 @@ class ToolExecutor:
         self.registry = registry
         self.policy = policy or ToolExecutionPolicy()
         self.hooks = list(hooks or [])
+        self._background: set[asyncio.Task] = set()
         self._semaphore = (
             asyncio.Semaphore(self.policy.max_concurrency)
             if self.policy.max_concurrency is not None
@@ -356,6 +357,8 @@ class ToolExecutor:
                 await stack.enter_async_context(tool_semaphore)
             if self._semaphore is not None:
                 await stack.enter_async_context(self._semaphore)
+            if request.dispatch_guard is not None:
+                await request.dispatch_guard()
             return await self._invoke(tool, request)
 
     def _get_tool_semaphore(
@@ -373,19 +376,25 @@ class ToolExecutor:
             self._tool_semaphores[tool_name] = semaphore
         return semaphore
 
-    @staticmethod
-    async def _invoke(tool: Tool, request: ToolExecutionRequest) -> Any:
+    async def _invoke(self, tool: Tool, request: ToolExecutionRequest) -> Any:
         """调用同步或异步工具，并避免同步函数阻塞事件循环。"""
 
         token = _CURRENT_TOOL_REQUEST.set(request)
         try:
             arguments = request.arguments or {}
-            if inspect.iscoroutinefunction(tool.handler):
+            if inspect.iscoroutinefunction(tool.handler) or inspect.iscoroutinefunction(getattr(tool.handler, "__call__", None)):
                 return await tool.handler(**arguments)
-            value = await asyncio.to_thread(tool.handler, **arguments)
-            if inspect.isawaitable(value):
-                return await value
-            return value
+            async def invoke_sync():
+                value = await asyncio.to_thread(tool.handler, **arguments)
+                return await value if inspect.isawaitable(value) else value
+            worker = asyncio.create_task(invoke_sync())
+            self._background.add(worker)
+            def finished(task):
+                self._background.discard(task)
+                if not task.cancelled():
+                    task.exception()  # 外层取消后也读取异常，实际效果仍由恢复核对。
+            worker.add_done_callback(finished)
+            return await asyncio.shield(worker)
         finally:
             _CURRENT_TOOL_REQUEST.reset(token)
 

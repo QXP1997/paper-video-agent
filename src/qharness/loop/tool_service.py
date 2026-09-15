@@ -21,6 +21,7 @@ class ToolService:
         if repository.snapshot()["policy"]["tools"] != asdict(executor.policy):
             raise LoopConfigurationError("工具配置与 Run 的策略快照不一致")
         self.executor, self.context, self.repository = executor, context, repository
+        self.approvals = None
         self._refresh_counts()
 
     def _refresh_counts(self):
@@ -62,9 +63,25 @@ class ToolService:
         if tool is not None:
             binding["effect"] = str(tool.effect)
             binding["parallel_safe"] = tool.parallel_safe
+        if self.context.lifecycle_managed:
+            previous = await asyncio.to_thread(self.repository.call_record, "tool", call_id)
+            if previous is not None:
+                if (previous["tool_name"] != tool_name or previous["arguments"] != arguments or
+                        previous["binding"]["stage_attempt"] != state.active_attempt_id or
+                        previous["binding"]["tool_definition"] != binding["tool_definition"]):
+                    raise LoopExecutionError("历史工具身份或定义改变", code="conflict")
+                if previous["status"] == "done" and not retry:
+                    old_result = await asyncio.to_thread(self.repository.tool_result, call_id)
+                    if old_result.error_code != "rejected":
+                        return old_result
+                    retry = True  # 原执行器保证 REJECTED 发生在 Handler 之前，重新核对全部条件。
+                if previous["status"] == "admitted" or (previous["status"] == "done" and retry):
+                    await asyncio.to_thread(self.repository.rebind_admitted, call_id, binding)
         await asyncio.to_thread(self.repository.admit_tool, call_id, tool_name, arguments, binding, self.executor.policy,
                                 requires_approval=tool.requires_approval if tool else False)
         await asyncio.to_thread(self._refresh_counts)
+        if self.approvals is not None:
+            await self.approvals.authorize(call_id)
         claim = await asyncio.to_thread(self.repository.claim_tool, call_id, retry=retry)
         if claim["status"] == "done":
             return await asyncio.to_thread(self.repository.tool_result, call_id)
@@ -73,6 +90,8 @@ class ToolService:
                                        error_code="unknown", data={"operation_id": claim["operation_id"]})
         request = self.context.create_tool_request(call_id=call_id, tool_name=tool_name,
             raw_arguments=arguments, operation_id=claim["operation_id"], metadata={"stage_attempt": state.active_attempt_id})
+        if self.approvals is not None:
+            request.dispatch_guard = lambda: self.approvals.dispatch(call_id)
         result = await self.executor.execute_admitted(request)
         if result.error_code in {"timeout", "cancelled"}:
             # 同步 Handler 可能仍在线程中运行，不能把外层超时写成已确定的失败。

@@ -47,6 +47,7 @@ class RunContext:
 
     # 供日志、追踪或上层调度使用的非安全关键扩展信息。
     metadata: dict[str, Any] = field(default_factory=dict)
+    lifecycle_managed: bool = False
 
     def __post_init__(self) -> None:
         """验证标识和核心依赖，避免创建无法安全使用的 Run。"""

@@ -961,6 +961,7 @@ async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
         return
     if os.name == "nt":
+        killer = None
         try:
             killer = await asyncio.create_subprocess_exec(
                 "taskkill.exe",
@@ -972,8 +973,13 @@ async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(killer.wait(), timeout=5.0)
+            if killer.returncode != 0:
+                process.kill()  # 清理工具失败时至少终止父进程；结果仍保持取消/未知。
             return
         except (OSError, TimeoutError):
+            if killer is not None and killer.returncode is None:
+                killer.kill()
+                await killer.wait()
             process.kill()
             return
     try:

@@ -22,5 +22,8 @@ max_run_events = 1024
 layered_feedback = true
 dynamic_stage_planning = true
 track_gap_progress = true
+context_compaction = true
+context_keep_turns = 4
+max_artifact_bytes = 536870912
 max_no_progress_investigations = 2
 # 工具限额、审批与具名覆盖继续配置在原有 tool.toml。

@@ -13,7 +13,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Boolean, ForeignKey, ForeignKeyConstraint, Integer, String, Text, select, update
+from sqlalchemy import Boolean, ForeignKey, ForeignKeyConstraint, Integer, String, Text, func, select, update
 from sqlalchemy.orm import Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.exc import SQLAlchemyError
@@ -157,6 +157,24 @@ class ArtifactRecord(OrmBase):
     media_type: Mapped[str] = mapped_column(String(64))
 
 
+class InputRecord(OrmBase):
+    __tablename__ = "loop_inputs"
+    run_key: Mapped[str] = mapped_column(ForeignKey("loop_runs.key"), primary_key=True)
+    input_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(32))
+    payload: Mapped[str] = mapped_column(_PAYLOAD)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+
+
+class JournalRecord(OrmBase):
+    __tablename__ = "loop_events"
+    run_key: Mapped[str] = mapped_column(ForeignKey("loop_runs.key"), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    payload: Mapped[str] = mapped_column(_PAYLOAD)
+
+
 class LoopRepository:
     def __init__(self, sessions: sessionmaker[Session], *, tenant_id: str, workspace_id: str, run_id: str):
         for value in (tenant_id, workspace_id, run_id):
@@ -217,21 +235,122 @@ class LoopRepository:
                                ("model_attempts", "used_tokens", "reserved_tokens", "tool_calls", "tool_executions")}}
 
     def install_state(self, state: RunState) -> None:
-        with self._write() as (_, row):
+        with self._write() as (session, row):
+            self.boundary(session)
             if row.state is not None or state.run_id != self.run_id or state.contract != TaskContract.model_validate_json(row.contract):
                 fail("只允许为同一契约安装初始状态")
             row.state, row.version = state.model_dump_json(), state.version
 
     def apply(self, event: LoopEvent, *, guard=None) -> RunState:
         """CAS 提交；可选受信任 guard 在写锁内复核外部前置条件。"""
-        with self._write() as (_, row):
+        with self._write() as (session, row):
             if row.state is None:
                 fail("尚未安装 TodoPlan")
+            if event.type != "wait":
+                self.boundary(session)
             state = reduce(RunState.model_validate_json(row.state), event)
             if guard is not None:
                 guard()
             row.state, row.version = state.model_dump_json(), state.version
+            row.contract = state.contract.model_dump_json()
+            self._journal(session, event.type, {"version": state.version, "phase": state.phase.value})
             return state
+
+    def _journal(self, session, kind, payload):
+        last = session.scalar(select(JournalRecord.sequence).where(JournalRecord.run_key == self.key)
+                              .order_by(JournalRecord.sequence.desc()).limit(1)) or 0
+        session.add(JournalRecord(run_key=self.key, sequence=last + 1, kind=kind, payload=encode(payload)))
+        session.flush()
+        return last + 1
+
+    def events(self, after=0, limit=100):
+        if after < 0 or not 1 <= limit <= 1000:
+            fail("事件游标或页大小不合法", "invalid_identity")
+        with self._session() as session:
+            return [{"sequence": r.sequence, "kind": r.kind, **json.loads(r.payload)} for r in session.scalars(
+                select(JournalRecord).where(JournalRecord.run_key == self.key, JournalRecord.sequence > after)
+                .order_by(JournalRecord.sequence).limit(limit))]
+
+    def enqueue(self, input_id, kind, payload):
+        validate_call_id(input_id)
+        with self._write() as (session, _):
+            existing = session.get(InputRecord, (self.key, input_id))
+            if existing:
+                if (existing.kind, existing.payload) != (kind, encode(payload)):
+                    fail("输入 ID 已绑定不同内容")
+                return existing.status
+            sequence = self._journal(session, "input_received", {"input_id": input_id, "input_kind": kind})
+            session.add(InputRecord(run_key=self.key, input_id=input_id, sequence=sequence,
+                                    kind=kind, payload=encode(payload), status="pending"))
+            return "pending"
+
+    def inputs(self, status="pending"):
+        with self._session() as session:
+            query = select(InputRecord).where(InputRecord.run_key == self.key)
+            if status is not None:
+                query = query.where(InputRecord.status == status)
+            return [{"id": r.input_id, "kind": r.kind, "payload": json.loads(r.payload), "status": r.status}
+                    for r in session.scalars(query.order_by(InputRecord.sequence))]
+
+    def consume_input(self, input_id, event=None, *, rejected=False):
+        """输入确认和状态转换同一事务；崩溃不会重复施加 Steering。"""
+        with self._write() as (session, row):
+            item = session.get(InputRecord, (self.key, input_id))
+            if item is None:
+                fail("输入不存在", "not_found")
+            if item.status != "pending":
+                return
+            if event is not None:
+                state = reduce(RunState.model_validate_json(row.state), event)
+                row.state, row.version, row.contract = state.model_dump_json(), state.version, state.contract.model_dump_json()
+            elif row.state is None and item.kind == "steer" and not rejected:
+                contract = TaskContract.model_validate_json(row.contract)
+                constraints = tuple(dict.fromkeys((*contract.constraints, *json.loads(item.payload)["constraints"])))
+                if constraints != contract.constraints:
+                    row.contract = TaskContract.model_validate({**contract.model_dump(), "version": contract.version + 1,
+                                                              "constraints": constraints}).model_dump_json()
+            item.status = "rejected" if rejected else "applied"
+            self._journal(session, "input_" + item.status, {"input_id": input_id, "version": row.version})
+
+    def boundary(self, session=None):
+        if session is None:
+            with self._session() as opened:
+                return self.boundary(opened)
+        if session.scalar(select(InputRecord.input_id).where(InputRecord.run_key == self.key,
+                          InputRecord.status == "pending").limit(1)):
+            fail("有待处理的运行输入，暂停新派发", "input_pending")
+
+    def call_record(self, kind, call_id):
+        cls = ModelCallRecord if kind == "model" else ToolCallRecord
+        with self._session() as session:
+            row = session.get(cls, (self.key, call_id))
+            if row is None:
+                return None
+            data = {c.name: getattr(row, c.name) for c in cls.__table__.columns}
+            for key in ("binding", "arguments", "policy", "response"):
+                if key in data and data[key] is not None:
+                    data[key] = json.loads(data[key])
+            return data
+
+    def recovery_inventory(self):
+        with self._session() as session:
+            return [{"kind": kind, "call_id": r.call_id, "status": r.status,
+                     "operation_id": getattr(r, "operation_id", None)}
+                    for cls, kind in ((ModelCallRecord, "model"), (ToolCallRecord, "tool"))
+                    for r in session.scalars(select(cls).where(cls.run_key == self.key))]
+
+    def rebind_admitted(self, call_id, binding):
+        with self._write() as (session, run):
+            call = session.get(ToolCallRecord, (self.key, call_id))
+            old = json.loads(call.binding)
+            rejected = call.status == "done" and json.loads(call.result).get("error_code") == "rejected"
+            if (call.status != "admitted" and not rejected) or binding["run_version"] != run.version or {
+                    k: v for k, v in old.items() if k != "run_version"} != {
+                    k: v for k, v in binding.items() if k != "run_version"}:
+                fail("不能重新绑定已派发或不同阶段的工具")
+            call.binding = encode(binding)
+            call.status = "admitted"
+            call.fingerprint = digest([call.tool_name, json.loads(call.arguments), binding, json.loads(call.policy)])
 
     def begin_model(self, call_id: str, role: str, request: dict, binding: dict, reservation: int) -> dict:
         validate_call_id(call_id)
@@ -251,6 +370,7 @@ class LoopRepository:
                     fail(call.error or "模型调用失败", "model_failed")
             if binding["run_version"] != run.version:
                 fail("模型调用基于过期 RunState")
+            self.boundary(session)
             policy = json.loads(run.policy)["loop"]
             if run.model_attempts >= policy["max_model_attempts"] or (
                 call is not None and call.attempts >= policy["max_request_attempts"]
@@ -277,17 +397,21 @@ class LoopRepository:
             return {"attempt": call.attempts, "cached": False}
 
     def finish_model(self, call_id: str, attempt: int, *, response: ChatResponse | None = None,
-                     error: str | None = None, retryable: bool = False) -> None:
+                     error: str | None = None, retryable: bool = False, reconciliation_ref=None) -> None:
         with self._write() as (session, run):
             call = session.get(ModelCallRecord, (self.key, call_id))
             record = session.get(ModelAttemptRecord, (self.key, call_id, attempt))
             if call is None or record is None or call.attempts != attempt or record.status != "dispatched":
                 fail("模型结果身份过期或重复提交")
+            if reconciliation_ref:
+                self._save_artifact(session, run, digest(["reconciled", "model", call_id, attempt]),
+                                    encode({"evidence_ref": reconciliation_ref}))
             status = "failed" if error else "done"
             raw = encode(asdict(response)) if response else None
             call.status, call.response, call.error, call.retryable = status, raw, error, retryable
             record.status, record.response, record.error = status, raw, error
             record.finished_at = datetime.now(UTC).isoformat()
+            self._journal(session, "model_finished", {"call_id": call_id, "status": status})
             if response:
                 index = len(json.loads(record.request)["messages"])
                 session.add(MessageRecord(run_key=self.key, call_id=call_id, attempt=attempt, sequence=index,
@@ -322,6 +446,7 @@ class LoopRepository:
                 return
             if run.version != binding["run_version"]:
                 fail("工具调用基于过期 RunState")
+            self.boundary(session)
             count = len(session.scalars(select(ToolCallRecord).where(
                 ToolCallRecord.run_key == self.key, ToolCallRecord.tool_name == tool_name)).all())
             if (policy.max_total_calls is not None and run.tool_calls >= policy.max_total_calls) or count >= resolved["max_calls"]:
@@ -346,6 +471,7 @@ class LoopRepository:
                     fail("无法证明上次未执行 Handler，禁止重放；需显式恢复核对", "unknown")
             if json.loads(call.binding)["run_version"] != run.version:
                 fail("未执行的工具调用绑定已经过期")
+            self.boundary(session)
             if run.tool_executions >= json.loads(run.policy)["loop"]["max_tool_executions"]:
                 fail("工具执行尝试预算耗尽", "budget_exceeded")
             call.status = "dispatched"
@@ -355,18 +481,21 @@ class LoopRepository:
                 status="dispatched", started_at=datetime.now(UTC).isoformat()))
             return {"status": "execute", "operation_id": call.operation_id, "execution": call.executions}
 
-    def finish_tool(self, result: ToolExecutionResult, execution: int, *, max_result_chars: int = 200_000) -> ToolExecutionResult:
-        with self._write() as (session, _):
+    def finish_tool(self, result: ToolExecutionResult, execution: int, *, max_result_chars: int = 200_000,
+                    guard=None, reconciliation_ref=None) -> ToolExecutionResult:
+        with self._write() as (session, run):
             call = session.get(ToolCallRecord, (self.key, result.call_id))
             record = session.get(ToolExecutionRecord, (self.key, result.call_id, execution))
             if call is None or record is None or call.status != "dispatched" or call.executions != execution:
                 fail("工具结果身份过期或重复提交")
+            if guard is not None:
+                guard()
+            if reconciliation_ref:
+                self._save_artifact(session, run, digest(["reconciled", "tool", result.call_id, execution]),
+                                    encode({"evidence_ref": reconciliation_ref}))
             content = encode({"data": result.data, "content": result.content})
             artifact_id = digest([self.key, content])
-            if session.get(ArtifactRecord, (self.key, artifact_id)) is None:
-                session.add(ArtifactRecord(run_key=self.key, artifact_id=artifact_id, content=content,
-                    sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(), size_bytes=len(content.encode("utf-8")),
-                    media_type="application/json"))
+            self._save_artifact(session, run, artifact_id, content)
             result = replace(result, artifact_id=artifact_id)
             if result.truncated:
                 # 摘要使用可解析 JSON，业务判断必须读取 data / Artifact。
@@ -384,7 +513,23 @@ class LoopRepository:
             payload = encode(asdict(replace(result, data=None)))
             call.status, call.result = "done", payload
             record.status, record.result, record.finished_at = "done", payload, datetime.now(UTC).isoformat()
+            self._journal(session, "tool_finished", {"call_id": result.call_id, "artifact_ref": artifact_id})
             return result
+
+    def _save_artifact(self, session, run, artifact_id, content):
+        existing = session.get(ArtifactRecord, (self.key, artifact_id))
+        if existing:
+            if existing.content != content:
+                fail("不可改写已保存的 Artifact")
+            return
+        size = len(content.encode("utf-8"))
+        limit = LoopConfig.model_validate(json.loads(run.policy)["loop"]).max_artifact_bytes
+        used = session.scalar(select(func.sum(ArtifactRecord.size_bytes)).where(ArtifactRecord.run_key == self.key)) or 0
+        if used + size > limit:
+            fail("Artifact 保留空间预算已满；不会删除被引用的凭据来腾出空间", "artifact_quota")
+        session.add(ArtifactRecord(run_key=self.key, artifact_id=artifact_id, content=content,
+            sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(), size_bytes=size, media_type="application/json"))
+        session.flush()
 
     def read_artifact(self, artifact_id: str) -> Any:
         with self._session() as session:
@@ -403,15 +548,8 @@ class LoopRepository:
         with self._write() as (session, run):
             if expected_version is not None and run.version != expected_version:
                 fail("Artifact 基于过期 RunState", "stale_context")
-            row = session.get(ArtifactRecord, (self.key, artifact_id))
-            if row is not None:
-                if row.content != content:
-                    fail("不可改写已保存的 Artifact")
-                return artifact_id
-            session.add(ArtifactRecord(run_key=self.key, artifact_id=artifact_id, content=content,
-                sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(), size_bytes=len(content.encode("utf-8")),
-                media_type="application/json"))
-        return artifact_id
+            self._save_artifact(session, run, artifact_id, content)
+            return artifact_id
 
     def tool_result(self, call_id: str) -> ToolExecutionResult:
         with self._session() as session:

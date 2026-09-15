@@ -47,6 +47,7 @@ class ContextCompiler:
     def __init__(self, config: LoopConfig, *, count_tokens: Callable[[ChatRequest], int] | None = None):
         self.config = config
         self.count_tokens = count_tokens
+        self.compacted_source = None
 
     def measure(self, request: ChatRequest) -> int:
         encoded = json.dumps(asdict(request), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -66,6 +67,7 @@ class ContextCompiler:
         observations: Sequence[str] = (), messages: Sequence[ChatMessage] = (),
         tools: Sequence[ToolDefinition] = (),
     ) -> tuple[ChatRequest, int]:
+        self.compacted_source = None
         validate_messages(messages)
         if state is not None and state.contract != contract:
             raise LoopConfigurationError("Context 与当前 TaskContract 不一致")
@@ -106,4 +108,73 @@ class ContextCompiler:
             response_format={"type": "json_object"} if role != Role.ACTOR else None,
             backend_max_retries=0,
         )
-        return request, self.measure(request)
+        try:
+            return request, self.measure(request)
+        except LoopConfigurationError:
+            if not self.config.context_compaction:
+                raise
+        return self._compact(request, payload, state)
+
+    def _compact(self, request, payload, state):
+        """确定性检索/压缩投影；原始记录单独保留，不反复总结上一份摘要。"""
+        from qharness.loop.repository import digest
+        source = asdict(request)
+        ref = digest(["context-source", source])
+        compact = deepcopy(payload)
+        if state is not None:
+            compact["run_state"]["attempts"] = compact["run_state"]["attempts"][-1:]
+            compact["run_state"]["progress_history"] = []
+            compact["run_state"]["task_verdicts"] = compact["run_state"]["task_verdicts"][-1:]
+            findings = {}
+            for delta in state.progress_history:
+                for finding in (*delta.resolved_questions, *delta.narrowed_questions, *delta.eliminated_hypotheses):
+                    findings[(finding.ref, finding.fact_id or finding.finding)] = finding.model_dump(mode="json")
+            compact["working_memory"] = {"historical_findings": list(findings.values()),
+                "notice": "历史结论仅供检索；是否仍有效以当前 ProgressReport 和 Verifier 为准。",
+                "attempt_count": len(state.attempts)}
+        # 检索完整观察项，按当前目标的词项匹配排序；其余只给来源引用。
+        query = json.dumps([payload.get("current_todo"), payload.get("stage")], ensure_ascii=False)
+        terms = set(query.split())
+        indexed = list(enumerate(compact["observations"]))
+        pinned = set()
+        for i, value in indexed:
+            try:
+                structured = json.loads(value)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(structured, dict) and ("stage_guidance" in structured or "available_checks" in structured):
+                pinned.add(i)
+        ranked = sorted(indexed, key=lambda item: (sum(t in item[1] for t in terms), item[0]), reverse=True)
+        selected = pinned | {i for i, _ in ranked[:self.config.context_keep_turns]}
+        compact["observations"] = [value for i, value in indexed if i in selected]
+        # 按完整 assistant/tool 组裁剪，绝不留下孤立工具结果。
+        groups = []
+        for message in request.messages[2:]:
+            if message.role != "tool":
+                groups.append([])
+            groups[-1].append(message)
+        kept = groups[-self.config.context_keep_turns:]
+        manifest = {"source_ref": ref, "source_messages": len(request.messages),
+                    "retained_groups": len(kept), "selected_observations": sorted(selected),
+                    "pinned": ["task", "current_todo", "stage", "questions", "satisfied_criteria", "pending_decision"],
+                    "compaction": "deterministic-v1"}
+        compact["context_manifest"] = manifest
+        request.messages = [request.messages[0], ChatMessage("user", json.dumps(compact, ensure_ascii=False)),
+                            *[m for group in kept for m in group]]
+        try:
+            tokens = self.measure(request)
+        except LoopConfigurationError:
+            # 大型工具日志仍保存原文；缩略仅用于本次模型输入。
+            for message in request.messages[2:]:
+                if message.role == "tool" and message.content and len(message.content) > 1024:
+                    message.content = json.dumps({"source_ref": ref, "tool_call_id": message.tool_call_id,
+                        "excerpt": message.content[:1024], "truncated": True}, ensure_ascii=False)
+            compact["observations"] = [value if i in pinned else json.dumps(
+                {"source_ref": ref, "index": i, "excerpt": value[:1024]}, ensure_ascii=False)
+                for i, value in indexed if i in selected]
+            manifest["large_outputs_truncated"] = True
+            request.messages[1].content = json.dumps(compact, ensure_ascii=False)
+            tokens = self.measure(request)  # 不再压缩原始契约和未决义务；仍放不下就等待。
+        validate_messages(request.messages[2:])
+        self.compacted_source = ref, source, manifest
+        return request, tokens

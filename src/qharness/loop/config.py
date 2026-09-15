@@ -61,6 +61,9 @@ class LoopConfig(ContractModel):
     dynamic_stage_planning: bool = False
     track_gap_progress: bool = False
     max_no_progress_investigations: int = Field(default=2, ge=1)
+    context_compaction: bool = False
+    context_keep_turns: int = Field(default=4, ge=1)
+    max_artifact_bytes: int = Field(default=536_870_912, ge=1)
 
     @model_validator(mode="after")
     def validate_policy(self):

@@ -481,8 +481,19 @@ class Terminate(Event):
     reason: Text
 
 
+class Steer(Event):
+    """受信任用户追加约束；原验收义务只增不减，旧行动需重新规划。"""
+    type: Literal["steer"] = "steer"
+    constraints: tuple[Text, ...] = Field(min_length=1)
+
+
+class RefreshContext(Event):
+    type: Literal["refresh_context"] = "refresh_context"
+    reason: Text
+
+
 LoopEvent = Annotated[
     StartStage | SubmitOutcome | RecordStageVerdict | ApplyFeedback | ReplaceTodoPlan
-    | ReopenTodos | RecordTaskVerdict | Wait | Resume | Terminate,
+    | ReopenTodos | RecordTaskVerdict | Wait | Resume | Terminate | Steer | RefreshContext,
     Field(discriminator="type"),
 ]

@@ -111,6 +111,8 @@ class ToolExecutionRequest:
     cancellation_event: asyncio.Event | None = None
     # 仅由可信调用方注入，不属于模型工具参数或 metadata。
     operation_id: str | None = None
+    # 可信控制器注入，在取得并发额度后、进入 Handler 前再次核对派发条件。
+    dispatch_guard: Any = None
 
 
 _CURRENT_TOOL_REQUEST: ContextVar[ToolExecutionRequest | None] = ContextVar("qharness_tool_request", default=None)

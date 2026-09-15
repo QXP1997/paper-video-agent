@@ -43,7 +43,7 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(history.get_operation(operation).commit_id, "a" * 40)
         self.assertIn("loop_artifacts", inspect(runtime.database.engine).get_table_names())
         with runtime.database.engine.connect() as connection:
-            self.assertEqual(connection.execute(text("select version_num from alembic_version")).scalar(), "0002_loop_ledger")
+            self.assertEqual(connection.execute(text("select version_num from alembic_version")).scalar(), "0003_run_lifecycle")
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), OrmBase.metadata), [])
 
     def test_run_state_compare_and_swap_and_reconstruction_keeps_budget(self):

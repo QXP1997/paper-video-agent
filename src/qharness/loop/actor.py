@@ -74,14 +74,19 @@ class Actor:
 
         for turn in range(1, self.config.max_actor_turns + 1):
             if self.tools.context.cancelled:
+                if self.tools.context.lifecycle_managed:
+                    raise LoopExecutionError("运行取消，保留行动恢复位置", code="input_pending")
                 return await handoff(stopped(OutcomeStatus.BLOCKED, "运行已取消，停止新行动"))
             call_id = "actor-" + digest([attempt.attempt_id, turn])
             try:
                 result = await self.model.call(call_id, Role.ACTOR, messages=history, observations=context_observations,
                     tools=self.tools.executor.registry.definitions(), stream=stream,
-                    cancellation_event=self.tools.context.cancellation_event, expected_version=state.version)
+                    cancellation_event=self.tools.context.cancellation_event, expected_version=state.version,
+                    replay_completed=self.tools.context.lifecycle_managed)
             except asyncio.CancelledError:
                 if self.tools.context.cancelled:
+                    if self.tools.context.lifecycle_managed:
+                        raise LoopExecutionError("模型取消后结果需核对", code="unknown")
                     return await handoff(stopped(OutcomeStatus.BLOCKED, "运行已取消；在途请求可能尚无确定结果"))
                 self.tools.context.cancel()
                 raise
@@ -93,11 +98,17 @@ class Actor:
                     history.append(ChatMessage("user", "上次响应违反输出协议，未执行其中的工具。请严格按当前 Schema、阶段身份和完整工具协议重新输出。"))
                     continue
                 if error.code in {"budget_exceeded", "unknown"}:
+                    if self.tools.context.lifecycle_managed:
+                        raise
                     return await handoff(stopped(OutcomeStatus.BLOCKED, str(error)))
                 raise
             except ModelBackendError as error:
+                if self.tools.context.lifecycle_managed:
+                    raise
                 return await handoff(stopped(OutcomeStatus.BLOCKED, "模型服务不可用：" + str(error)))
             except LoopConfigurationError as error:
+                if self.tools.context.lifecycle_managed:
+                    raise
                 return await handoff(stopped(OutcomeStatus.BLOCKED, "上下文或调用配置阻止继续：" + str(error)))
 
             if result.output is not None:
@@ -132,6 +143,8 @@ class Actor:
                     observations.append(item.logical_call_id)
             validate_messages(history)
             if any(item.result.error_code in {"unknown", "budget_exceeded", "cancelled", "rejected"} for item in batch):
+                if self.tools.context.lifecycle_managed:
+                    raise LoopExecutionError("行动批次需等待输入或恢复核对", code="input_pending")
                 return await handoff(stopped(OutcomeStatus.BLOCKED, "工具批次遇到未知效果、预算、取消或审批阻塞"))
             if any(item.result.error_code == "stale_context" for item in batch):
                 raise LoopExecutionError("阶段状态已改变，停止旧行动循环", code="stale_context")

@@ -123,7 +123,7 @@ Dulwich 与操作数据库的存储方式不同：数据库是全局共用的一
 
 ## Agent Loop 实现进度
 
-已完成[实现计划](docs/Agent-Loop实现计划.md)的批次 1—6：Planner / Executor 已串起完整任务主线，并接入分层反馈、动态阶段选择和证据关联的进展判断。应用提供原始 TaskContract 和受信任的 CheckCatalog，调用 `await services.executor.run(checks)` 后，会生成初步 Todo、动态规划阶段、执行行动、验证和选择反馈，最终返回 COMPLETED / WAITING / TERMINATED 对应的 RunState。
+已完成[实现计划](docs/Agent-Loop实现计划.md)的批次 1—7：Planner / Executor 已串起完整任务主线，并接入分层反馈、动态阶段选择、证据关联的进展判断及长任务生命周期。应用提供原始 TaskContract 和受信任的 CheckCatalog，通过 `RunService(services)` 调度，会生成初步 Todo、动态规划阶段、执行行动、验证和选择反馈，最终返回 COMPLETED / WAITING / TERMINATED 对应的 RunState。初始规划前暂停时返回 None，保留持久输入与调用账本。
 
 `qharness.run.create_loop_services()` 在已有 RunContext、ModelBackend、ToolExecutor 和 DatabaseManager 上装配调用服务。原独立模型及工具入口继续可用；Loop 请求关闭 SDK 内部重试，由角色调用服务逐次计量。`config/loop.example.toml` 配置 Loop，工具配置与 None 继承语义仍沿用 `tool.toml`。
 
@@ -139,9 +139,13 @@ Dulwich 与操作数据库的存储方式不同：数据库是全局共用的一
 .\.venv\Scripts\python.exe -X utf8 examples/19_task_executor.py --integration-failure
 .\.venv\Scripts\python.exe -X utf8 examples/20_reasoning_strategies.py
 .\.venv\Scripts\python.exe -X utf8 examples/20_reasoning_strategies.py --ablation
+.\.venv\Scripts\python.exe -X utf8 examples/21_run_lifecycle.py
+.\.venv\Scripts\python.exe -X utf8 examples/21_run_lifecycle.py --mode steering
+.\.venv\Scripts\python.exe -X utf8 examples/21_run_lifecycle.py --mode approval
+.\.venv\Scripts\python.exe -X utf8 examples/21_run_lifecycle.py --mode recovery
 ```
 
-累计 158 项离线测试通过，本批新增 25 项推理策略测试。示例 19 演示基础任务主线及集成失败后的继续修复；示例 20 演示排除假设、识别重复调查、更换来源、局部修复和最终验收，并提供八种开关组合对照。文件和历史真实落盘，模型及检查输出使用可控 Fixture，不能据此宣称真实任务收益。示例 17 接入已配置的真实 Backend 与 SRT：
+累计 187 项离线测试通过，第七批新增 29 项生命周期、恢复和上下文测试。示例 19 演示基础任务主线及集成失败后的继续修复；示例 20 演示推理策略并提供八种开关组合对照；示例 21 演示暂停恢复、追加约束、审批以及结果丢失后的历史核对，四种模式均通过。文件和历史真实落盘，模型及检查输出使用可控 Fixture，不能据此宣称真实任务收益。示例 17 接入已配置的真实 Backend 与 SRT：
 
 ```powershell
 .\.venv\Scripts\python.exe examples/17_stage_actor.py --stream
@@ -155,9 +159,13 @@ Actor 只交回 candidate / needs_replan / blocked / stalled，不把 Todo 或 T
 
 REPAIR 复用完整 StagePlan，只建立新 Attempt；RETRY_CHECK 不重新调用 Actor。规划和修复上下文会回填最近的完整检查输出。TodoPlanPatch 需绑定当前版本、修订理由和反馈证据，并保持原始验收覆盖。阶段次数、局部修复、重规划、检查重试和事件预算有明确上限；效果未知、预算或环境阻塞进入 WAITING，不伪称完成。
 
-`layered_feedback`、`dynamic_stage_planning`、`track_gap_progress` 三个开关独立控制分层反馈、阶段类型选择、缺口关联与调查停滞处理；示例配置显式启用，旧配置和 `LoopConfig()` 保持关闭。CheckSpec 可增加 addresses、on_failure 和带 fact_id 的 QuestionConclusion，前提是实际断言确实证明这些关联、诊断或结论。模型自评不能生成进展；重复取得同一结论不算新信息，改写阶段标题也不能代替改变实际检查来源。具体接口和可信检查边界见[实现计划第 5.6 节](docs/Agent-Loop实现计划.md#56-批次-6)。完整恢复/Steering、上下文压缩和真实模型与 SRT 的端到端验收继续按批次 7—8 实施。
+`layered_feedback`、`dynamic_stage_planning`、`track_gap_progress` 三个开关独立控制分层反馈、阶段类型选择、缺口关联与调查停滞处理；示例配置显式启用，旧配置和 `LoopConfig()` 保持关闭。CheckSpec 可增加 addresses、on_failure 和带 fact_id 的 QuestionConclusion，前提是实际断言确实证明这些关联、诊断或结论。模型自评不能生成进展；重复取得同一结论不算新信息，改写阶段标题也不能代替改变实际检查来源。具体接口和可信检查边界见[实现计划第 5.6 节](docs/Agent-Loop实现计划.md#56-批次-6)。
 
-数据库仍由应用级 DatabaseManager.initialize() 统一升级，新 revision 为 `0002_loop_ledger`。新增七张 Loop 表并保留工作区历史；已验证 SQLite 旧数据升级。工具返回的完整业务数据在 `ToolExecutionResult.data`，模型摘要在 `content`，持久输出引用在 `artifact_id`；外层 success 不代表 Shell 退出码为零。
+`from qharness.run import RunService` 后，用 `lifecycle = RunService(services)` 装配生命周期入口。`lifecycle.start(checks)` 启动，`await lifecycle.wait()` 等待；UI 断开等待不会取消服务任务。应用通过 `submit(input_id, kind, payload)` 提交已授权的 pause / cancel / resume / steer / approval，并按 `events(after=...)` 补读状态事件。WAITING 后需处理条件再启动；审批绑定具体行动及当前前提，未知效果必须核对后恢复，已完成写入不重放。同主机的 Run 和物理工作区由操作系统锁互斥；原独立入口保留，生命周期保证需要统一经过 RunService。
+
+`context_compaction` 在容量不足时压缩历史，保留完整任务与验收要求；原文和 ContextManifest 存入 Artifact，可经只读 `read_run_artifact` 工具分页取回。示例配置启用压缩，旧配置默认关闭；Artifact 默认保留上限 512 MiB，超限拒绝写入，已有证据不自动删除。接口、恢复取证与单主机边界见[实现计划第 5.7 节](docs/Agent-Loop实现计划.md#57-批次-7)。真实模型、SRT 和生产 Profile 验收是下一批次。
+
+数据库仍由应用级 DatabaseManager.initialize() 统一升级，当前 revision 为 `0003_run_lifecycle`：在七张 Loop 表基础上增加输入、事件两张表，并保留工作区历史；已验证 SQLite 旧数据升级。工具返回的完整业务数据在 `ToolExecutionResult.data`，模型摘要在 `content`，持久输出引用在 `artifact_id`；外层 success 不代表 Shell 退出码为零。
 
 ## 当前目录
 

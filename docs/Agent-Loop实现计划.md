@@ -1,6 +1,6 @@
 # QHarness Agent Loop 实现计划
 
-> 状态：批次 1—6 已实现并通过离线行为检查；批次 7—8 待实现（更新于 2026-09-14）<br>
+> 状态：批次 1—7 已实现并通过离线行为检查；批次 8 待验收（更新于 2026-09-15）<br>
 > 制定日期：2026-09-13  
 > 代码基线：HEAD `8ff37fe` 及当日工作区  
 > 设计依据：[Agent Loop 文献综述与 QHarness 设计建议](./Agent-Loop文献综述与QHarness设计建议.md)  
@@ -136,17 +136,17 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 **目的：** 让同一推理过程跨上下文窗口、用户追加要求和进程重启继续。
 
-- [ ] 完成 Context Compiler 的检索、结构化工作记忆、压缩与 ContextManifest。
-- [ ] 保留 Task / Todo / Stage 条件、未决问题与有效发现，压缩不清零预算或破坏工具配对。
-- [ ] 实现 RunService、输入收件箱、Steering、审批、暂停、取消和恢复。
-- [ ] 审批绑定参数、版本与前置条件；重复决定不重复执行，参数变化重新校验。
-- [ ] 实现稳定执行身份下的恢复核对：已完成、未派发、部分结果、未知副作用分别处理。
-- [ ] 处理同步 Handler 可能继续运行、沙箱进程树清理、工作区变更与证据失效。
-- [ ] 完成 Run 单写者、同物理根目录互斥、客户端断连和事件补读。
-- [ ] 联调 Artifact 保留、磁盘不足、引用保护、日志脱敏和配置快照。
-- [ ] 在派发、落盘、Commit、结果确认等边界做故障注入。
+- [x] 完成 Context Compiler 的检索、结构化工作记忆、压缩与 ContextManifest。
+- [x] 保留 Task / Todo / Stage 条件、未决问题与有效发现，压缩不清零预算或破坏工具配对。
+- [x] 实现 RunService、输入收件箱、Steering、审批、暂停、取消和恢复。
+- [x] 审批绑定参数、版本与前置条件；重复决定不重复执行，参数变化重新校验。
+- [x] 实现稳定执行身份下的恢复核对：已完成、未派发、部分结果、未知副作用分别处理。
+- [x] 处理同步 Handler 可能继续运行、沙箱进程树清理、工作区变更与证据失效。
+- [x] 完成 Run 单写者、同物理根目录互斥、客户端断连和事件补读。
+- [x] 联调 Artifact 保留、磁盘不足、引用保护、日志脱敏和配置快照。
+- [x] 在派发、落盘、Commit、结果确认等边界做故障注入。
 
-主要位置：`run/service.py`、`loop/recovery.py`、`context/`、`loop/repository.py`、现有 sandbox / workspace、`tests/recovery/`。
+主要位置：`run/service.py`、`run/ownership.py`、`loop/recovery.py`、原 `loop/context.py` / `repository.py`、现有 ToolExecutor / SRT，以及 `tests/loop/test_lifecycle.py`、`test_recovery.py`、`test_long_context.py`。没有另建 context 子系统或重复的工作区历史实现。
 
 验收出口：恢复时回到正确 Todo / Stage / Attempt，不重做已完成行动；新用户约束阻止冲突旧动作；旧审批不放行新参数；取消不会伪称所有未知效果已经消失；UI 断连不丢运行结果。
 
@@ -557,7 +557,106 @@ ProgressTracker 从原 CheckEvidence 与 ProgressDelta 重建有效发现。文�
 
 专项测试还覆盖：类型和无关检查在 Actor 前被拒绝、缺少 done_when 时选择 VALIDATE、原 Task 覆盖缺失仍等待、未知失败先调查、前提失效不能重用、改名无法规避停滞、不同来源的排除/缩小范围算进展、调查证据过期、有效知识跨 Todo 重分解保留、在途阶段不增加停滞、环境故障只补查、原共享预算仍生效，以及旧配置和旧检查指纹兼容。原 133 项行为检查继续通过。
 
-**下一步为批次 7：长期任务、用户交互与恢复联调。** 在现有 ContextCompiler、RunContext、仓储和 Executor 上完成上下文工作记忆与压缩、RunService/收件箱、Steering 与审批回复、恢复核对和单写者协调。真实模型、SRT 与跨任务策略收益评测继续按批次 8 验收。
+上述为批次 6 交付记录；生命周期与恢复联调现已由批次 7 接入。
+
+### 5.7 批次 7
+
+2026-09-15 完成长任务生命周期与恢复联调，累计 **187 项离线测试通过，本批新增 29 项**。新增 RunService、主机内跨进程所有权协调和 RecoveryController；上下文继续扩展原 ContextCompiler，输入和事件继续使用应用 DatabaseManager，模型、工具、状态转换、文件历史及验证器均复用原实现。
+
+**应用运行入口：**
+
+```python
+from qharness.run import RunService
+
+lifecycle = RunService(services)  # services 仍来自 create_loop_services(...)
+lifecycle.start(checks)          # 任务由服务拥有，生命周期与一次 UI 请求分离
+state = await lifecycle.wait()  # shield 等待；客户端取消等待不会取消服务任务
+
+await lifecycle.submit("user-event-101", "pause")
+await lifecycle.submit("user-event-102", "resume")
+await lifecycle.submit("user-event-103", "cancel")
+await lifecycle.submit("user-event-104", "steer", {"constraints": ["保持现有接口兼容"]})
+events = lifecycle.events(after=last_sequence, limit=100)
+```
+
+submit 只接收已经由应用完成认证和授权的输入，不替代租户鉴权。每个 input_id 固定绑定类型和内容；重复提交同一内容返回原状态，不同内容被拒绝。输入确认、契约变更和状态转换在同一数据库事务内提交。UI 可按事件游标补读，再读取 snapshot 获取当前状态；终态收到新输入会拒绝，不修改已经完成的 Run。
+
+以上 submit 示例展示不同入口，不表示应连续提交这些相互不同的控制命令。run 返回 WAITING 后，应用处理条件、提交新的输入，再调用 start / wait 或 run；没有自动定时重试与无限自唤醒。
+
+**输入如何阻止旧动作：**
+
+模型和工具准入、工具正式派发前、状态结果提交前都会检查待处理输入。取消还由服务监视收件箱并传递到原 RunContext cancellation_event，因此另一进程写入取消也能中止当前模型请求或沙箱执行。pause 在当前执行的安全边界暂停；已经进入 Handler 的效果不会被描述成从未发生。
+
+Steering 以追加约束形式实现：原 objective / criteria 和已有约束保留，TaskContract.version 增加，原 Todo 完成状态重开，旧 Attempt 停止派发，回到 Planner。新约束进入模型上下文，并且必须被新的独立 Task 检查覆盖才能完成。当前入口不支持删除原要求或任意替换任务；这类请求应明确建立新的任务契约。模型自己不能提交 Steer。
+
+初步 Todo 尚未建立时也能持久接收暂停、取消和追加约束，返回 state=None 表示尚未初始化；不会为了记录暂停而虚构 TodoPlan。恢复时再用当前契约初始化。
+
+**暂停与审批恢复：**
+
+- 受管理的 Actor 在暂停、审批或未知效果处保留 ACTING 恢复位置。同一 Attempt 重入时，用原稳定模型/工具调用 ID 读取已完成结果，重建历史；只继续未完成调用，不重新执行已完成的文件写入。批次中的部分调用完成时同样适用。
+- Wait 保存工作区和环境基线。普通 resume 时，ACTING 的工作区/环境已经变化或缺少基线，则通过 RefreshContext 回到 Planner，停止使用旧模型产出的待执行动作。阻塞产出解除后也重新规划，不反复验证同一个 blocked 结果。既有 Verifier 继续负责 Todo 证据的失效与依赖传播。
+- 需要审批的调用先停留在 admitted，不进入 Handler。approval_request 通过事件中的引用指向原 Artifact；应用展示其中的工具、参数与前提，并在收到用户决定后提交 `{"approval_ref": ref, "allow": True/False}`。
+- 审批绑定工具参数、工具定义、策略、Attempt、契约版本、工作区内容和环境身份。过期审批被拒绝并重新生成当前请求；旧参数或旧工作区的允许不会放行新的请求。暂停/恢复引起的 Run CAS 版本变化不清空逻辑调用身份，但派发时会重新绑定并核对当前版本。
+- 原 ToolExecutor 的参数校验和其他 Hook 仍然执行；任意拒绝仍能阻止行动。在取得并发额度后、进入 Handler 前再次核对输入和审批，避免排队期间的变化被忽略。因前置拒绝而明确未进入 Handler 的调用，恢复后可以重新校验；超时和未知效果不走这条重试路径。
+
+**未知效果的恢复：**
+
+`lifecycle.recovery()` 返回原调用账本中的 model/tool、call_id、状态和 operation_id。done 读取已有结果；admitted 尚未派发，可以在当前身份和前提下继续；dispatched 没有最终结果时保持未知，普通 resume 被拒绝，既不换 ID 偷偷重放，也不自动退回模型费用预留。
+
+```python
+# 仅供受信任恢复适配器：先检查实际执行者/远端任务已静止，再核对真实效果。
+ref = await lifecycle.recovery_controller.observe(
+    "tool", original_call_id,
+    resolution="completed",  # 也可以是 not_executed 或 partial
+    description="已核对原 operation 对应的 Commit、实际文件和执行状态",
+    quiescent=True,
+    result=recovered_tool_result,
+)
+await lifecycle.recovery_controller.reconcile(ref)
+await lifecycle.submit("resume-after-reconciliation", "resume")
+```
+
+quiescent=True 是应用检查后的事实声明，不是让调用者不经核对填写的开关，也不能由 Actor 决定。observe 并不自动证明外部请求是否成功。凭据绑定当前 Run 的原调用、执行次数、operation_id 和核对时工作区；提交时再次复核，工作区改变后必须重新取证。核对凭据和最终结果确认同一事务提交，重复确认不重新执行工具。
+
+部分效果必须保留失败/部分结果，不能用 success=True 包装。文件已落盘但 Commit 尚未完成的情况，可复用原 WorkspaceMutationService / history_repository 检查并记录 pending 操作的失败，保留实际文件，再让下一动作修复；不能伪造 APPLIED Commit。存在已确认 Commit 但缺少工具结果时，可据原 operation 的真实历史回填结果。不同外部服务需要应用提供相应的恢复核对适配器，没有一个通用“超时就重试”规则。
+
+丢失的模型响应支持显式 abandoned：保留原 Token 预留，把这次响应标为已放弃，后续新请求继续消耗原共享预算。不会用模型响应缺失推断调用免费，也不把历史错误当作新的成功。
+
+**所有权、取消和进程：**
+
+RunService 同时取得当前 Run 和规范化物理根目录的操作系统锁。在同一主机内，不同进程、不同 Run 或路径别名不能并发拥有同一个工作区；未知效果留下持久所有者标记，不能靠 TTL 到期让其他 Run 自动接管。原服务/原运行可以在取得锁后核对未知调用。此实现针对单主机共享工作区，不声明实现跨主机租约、网络文件系统 fencing 或 Kubernetes 故障接管。
+
+同步 Handler 的 asyncio 外层取消不会杀掉 Python 线程。原 ToolExecutor 现在跟踪实际后台执行，RunService 在这些执行真正结束前保持工作区锁；WAIT 状态和事件仍可查询。永久挂起的线程需要宿主进程管理处理，不能通过释放锁假装它已经停止。SRT 沿用原进程树清理，补齐 taskkill 失败时的父进程回退；清理回退不构成副作用已经消失的证明。真实 SRT 隔离环境的端到端验收仍属于批次 8。
+
+需要这些生命周期保证的应用应统一经 RunService 调度；原 Actor、Executor 和独立工具入口为兼容及受信任嵌入保留，不会自动取得 RunService 的所有权锁。不要混用未受管理的写入通道并将其描述成单写者执行。
+
+**上下文与保留策略：**
+
+`context_compaction=True` 时，仅在原容量检查不能容纳输入后进行确定性压缩：保留完整任务契约、Todo、当前 Stage、未决问题、当前验收凭据及反馈；历史 Attempts 压缩为当前尝试，调查发现进入按问题/事实去重的工作记忆。历史发现明确标为参考，是否有效仍由 ProgressReport 和 Verifier 决定。观察使用当前目标词项检索，Stage guidance 和受信任检查目录始终保留；不是另一个学习型摘要模型。
+
+聊天历史按完整 assistant/tool 组保留最近 context_keep_turns 组，不拆散工具配对。大型日志可改为来源引用及摘录，原文和 ContextManifest 先存入 Artifact 才发送模型请求。模型可通过复用原工具通道的只读 read_run_artifact 分页取回当前 Run 原文，仍计入工具预算；应用可通过 lifecycle.retrieve 读取。无法在容量内保留原始契约时明确停止，不压缩掉验收义务。
+
+示例配置启用压缩，context_keep_turns 默认 4；LoopConfig() / 缺少开关的旧配置保持 context_compaction=False。max_artifact_bytes 默认 512 MiB，按 UTF-8 字节累计，重复保存同一 Artifact 不重复占用保留额度。当前策略保留全部 Artifact，不提供自动清理，因此不会为了腾空间删除仍被引用的证据。达到上限或实际磁盘/数据库写入失败时拒绝写入，发生在工具效果之后则继续保留 dispatched 等待恢复核对；需要先处理存储条件，不能把未落盘结果当作已确认结果。
+
+默认事件只发布类型、版本、调用 ID 和 Artifact 引用，不发布用户约束正文、命令参数、模型消息或完整日志；数据库错误保留原统一脱敏边界。完整证据仍是受租户隔离保护的业务数据，应用须为 retrieve / snapshot / model_trace 等原文接口做鉴权。这里的事件数据最小化不等于任意用户内容都能自动识别并移除密钥。
+
+**迁移、验证与演示：**
+
+数据库 head 升为 **0003_run_lifecycle**，只增加 loop_inputs、loop_events 两张表。RunState、调用、执行、Artifact 和工作区历史继续使用原表。继续由 DatabaseManager.initialize() 统一迁移；已验证旧工作区数据保留和 ORM / migration 一致性。重建服务时读取最新 contract / config snapshot，不能继续把 Steering 前的旧契约当成当前契约重新装配。
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe -X utf8 examples/21_run_lifecycle.py
+.\.venv\Scripts\python.exe -X utf8 examples/21_run_lifecycle.py --mode steering
+.\.venv\Scripts\python.exe -X utf8 examples/21_run_lifecycle.py --mode approval
+.\.venv\Scripts\python.exe -X utf8 examples/21_run_lifecycle.py --mode recovery
+```
+
+示例四种模式均完成。暂停恢复与审批模式均为 6 次模型尝试、8 次工具执行，已完成写入没有重复；Steering 模式契约升至 v2，并通过新增独立约束检查；恢复模式核对真实操作历史后回填结果，工具执行总数仍为 8。
+
+测试覆盖正常/终态重入、初始规划前的控制输入、暂停后整套服务重建、批次部分完成、审批重复与过期、追加约束拦截旧动作、最终新约束覆盖、输入/状态原子提交失败、其他进程取消、UI 断连与游标补读、跨进程工作区锁、同步线程超时锁保留、未派发中断、文件已写但 Commit 未确认、Commit 已确认但工具结果未落盘、部分/未知效果核对、过期恢复凭据、模型预留不退还、上下文原文/manifest 保留及 Artifact 配额。
+
+**下一步为批次 8：真实任务与生产 Profile 验收。** 运行真实模型和 SRT 的固定任务集、三项推理策略对照、多次试验及最终状态检查，再根据成功率、误完成、返工、成本和人工介入确定默认 Profile。上述离线检查没有代替这一步，也没有宣称所有生产部署环境都已经完成验收。
 
 ## 6. 进度维护规则
 
