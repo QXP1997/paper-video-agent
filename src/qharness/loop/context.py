@@ -1,7 +1,4 @@
-"""基础角色上下文编译；直接复用 ChatRequest 和消息协议。
-
-本批不压缩历史。容量不足明确拒绝，避免默默丢掉验收项或拆散工具配对。
-"""
+"""角色上下文编译；按配置压缩历史并保留原文引用，不丢验收义务或拆散工具配对。"""
 
 import json
 from collections.abc import Callable, Sequence

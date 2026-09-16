@@ -42,7 +42,7 @@ class CheckCatalog:
 
     def context(self):
         return encode({"available_checks": [s.model_dump(mode="json") for s in self.specs],
-            "instruction": "检查由应用维护；规划可验证的目标，不能削弱任务。未被目录覆盖的结果需补充检查，不能自行宣称通过。"})
+            "instruction": "检查由应用维护；规划可验证的目标，不能削弱任务。Todo.done_when 必须逐字复制 TODO 检查 targets 中的标签，不能写阅读、修改、运行命令或模型自定义的完成句。Stage.expected_results 必须逐字复制 STAGE 检查 targets；acceptance_refs 只能使用 Task criterion ID。仅 TASK 检查覆盖的约束留给最终 Task 验证，不要复制进 Todo 或 Stage。未被目录覆盖的结果需补充检查，不能自行宣称通过。"})
 
 
 class VerificationController:

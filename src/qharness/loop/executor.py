@@ -59,7 +59,7 @@ class Executor:
                 if state is None:
                     if self.context.cancelled:
                         raise LoopExecutionError("规划前已取消，未建立 TodoPlan", code="initialization_failed")
-                    state = await self.planner.initialize(observations=notes, questions=questions)
+                    state = await self.planner.initialize(observations=notes, questions=questions, checks=checks)
                 while True:
                     state = await self._state()
                     if state.phase in (Phase.COMPLETED, Phase.TERMINATED, Phase.WAITING):
@@ -75,7 +75,7 @@ class Executor:
                         if await self.verifier.refresh(checks.specs):
                             continue
                         if state.pending_decision and state.pending_decision.route == Route.REPLAN_TODO:
-                            await self.planner.revise(state, observations=notes)
+                            await self.planner.revise(state, observations=notes, checks=checks)
                             continue
                         if len(state.attempts) >= self.config.max_stage_attempts:
                             return await self._wait("阶段尝试预算已到，保留未完成任务")

@@ -123,6 +123,8 @@ Dulwich 与操作数据库的存储方式不同：数据库是全局共用的一
 
 ## Agent Loop 实现进度
 
+第八批正在进行：已新增 [18 个微型任务与可复现评测入口](evals/README.md)，累计 **201 项离线测试通过**。真实模型探针促使 Planner 增加 Todo / Stage 检查层级覆盖校验，规划稳定性仍待改善。退出 360 后 SRT 已通过预检，固定命令和真实任务均能在沙箱中执行；完整策略对照和生产 Profile 尚未验收，见[第八批验收记录](docs/Agent-Loop第八批验收记录.md)。执行 `.\.venv\Scripts\python.exe -X utf8 -m evals.run --plan` 生成评测计划，去掉 `--plan` 执行真实任务，`--probe-model` 额外检查真实规划协议。
+
 已完成[实现计划](docs/Agent-Loop实现计划.md)的批次 1—7：Planner / Executor 已串起完整任务主线，并接入分层反馈、动态阶段选择、证据关联的进展判断及长任务生命周期。应用提供原始 TaskContract 和受信任的 CheckCatalog，通过 `RunService(services)` 调度，会生成初步 Todo、动态规划阶段、执行行动、验证和选择反馈，最终返回 COMPLETED / WAITING / TERMINATED 对应的 RunState。初始规划前暂停时返回 None，保留持久输入与调用账本。
 
 `qharness.run.create_loop_services()` 在已有 RunContext、ModelBackend、ToolExecutor 和 DatabaseManager 上装配调用服务。原独立模型及工具入口继续可用；Loop 请求关闭 SDK 内部重试，由角色调用服务逐次计量。`config/loop.example.toml` 配置 Loop，工具配置与 None 继承语义仍沿用 `tool.toml`。

@@ -91,7 +91,22 @@ class Planner:
                 problem = "角色 JSON、版本、验收引用或证据引用不符合当前输出 Schema 与状态约束"
         raise LoopExecutionError("规划输出持续不满足契约，停止自动规划", code="planning_failed")
 
-    async def initialize(self, *, observations=(), questions=()) -> RunState:
+    @staticmethod
+    def validate_todo_checks(plan, checks):
+        if checks is None:
+            return
+        for todo in plan.todos:
+            required = set(todo.acceptance_refs) | set(todo.done_when)
+            selected = [s for s in checks.specs if s.scope == Scope.TODO and set(s.targets) <= required]
+            covered = {target for s in selected for target in s.targets}
+            if required - covered:
+                available = [s.targets for s in checks.specs if s.scope == Scope.TODO]
+                raise ValueError("Todo 完成义务缺少 TODO 层检查覆盖：" + ", ".join(sorted(required-covered))
+                    + "。可用 TODO 检查目标组：" + encode(available)
+                    + "。acceptance_refs 只能引用 criterion ID；done_when 使用 TODO 层标签。"
+                      "仅由 TASK 层检查覆盖的约束仍由最终 Task 检查保留，不复制成缺少 TODO 检查的完成标签。")
+
+    async def initialize(self, *, observations=(), questions=(), checks=None) -> RunState:
         snapshot = await asyncio.to_thread(self.repository.snapshot)
         if snapshot["state"] is not None:
             return snapshot["state"]
@@ -99,16 +114,18 @@ class Planner:
             if plan.version != 1 or any(t.version != 1 for t in plan.todos):
                 raise ValueError("初始计划和 Todo 应从版本 1 开始")
             create_run(self.repository.run_id, snapshot["contract"], plan, questions=questions)
+            self.validate_todo_checks(plan, checks)
         plan = await self._call(Role.TODO_PLANNER, None, validate, observations=observations)
         state = create_run(self.repository.run_id, snapshot["contract"], plan, questions=questions)
         await asyncio.to_thread(self.repository.install_state, state)
         return state
 
-    async def revise(self, state: RunState, *, observations=()) -> RunState:
+    async def revise(self, state: RunState, *, observations=(), checks=None) -> RunState:
         observations = (*observations, *await self.evidence_context(state))
         def event(patch):
             if patch.base_version != state.todo_plan.version:
                 raise ValueError("计划修订基于旧版本")
+            self.validate_todo_checks(patch.plan, checks)
             return ReplaceTodoPlan(run_id=state.run_id, expected_version=state.version, plan=patch.plan)
         patch = await self._call(Role.TODO_PLANNER, state, lambda p: reduce(state, event(p)),
                                  observations=observations, plan_patch=True)
@@ -151,6 +168,13 @@ class Planner:
             def validate(plan):
                 projected = reduce(state, StartStage(run_id=state.run_id, expected_version=state.version,
                                                      plan=plan, attempt_id=attempt_id))
+                if checks is not None:
+                    covered = {target for s in checks.stage_checks(projected) if s.scope == Scope.STAGE for target in s.targets}
+                    missing = set(plan.expected_results) - covered
+                    if missing:
+                        available = [s.targets for s in checks.specs if s.scope == Scope.STAGE]
+                        raise ValueError("阶段结果缺少 STAGE 层检查覆盖：" + ", ".join(sorted(missing))
+                                         + "。可用 STAGE 检查目标组：" + encode(available))
                 if guide and config.dynamic_stage_planning and plan.kind.value != guide["kind"]:
                     raise ValueError("阶段类型必须对应当前关键不确定性或验收缺口：" + guide["kind"])
                 if checks is not None and plan.information_sources:
