@@ -1,0 +1,52 @@
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
+env/
+paper/
+
+# Python caches and tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and package artifacts
+build/
+dist/
+*.egg-info/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Papers and generated media
+paper/
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
