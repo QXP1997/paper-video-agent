@@ -789,6 +789,56 @@ def concat_segment_videos(
 
     run_cmd(cmd)
 
+
+def compress_video_for_social(
+    input_path: str | Path,
+    output_path: str | Path,
+    fps: int = 15,
+    crf: int = 27,
+    audio_bitrate: str = "64k",
+):
+    """Create a compact H.264 copy suited to mostly-static social video."""
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+
+    if not input_path.is_file():
+        raise FileNotFoundError(f"待压缩视频不存在: {input_path}")
+
+    if input_path.resolve() == output_path.resolve():
+        raise ValueError("压缩版输出路径不能覆盖高质量原片")
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", str(input_path.resolve()),
+
+        # 论文页基本静止，15fps 足以保留字幕和进度条动画，
+        # 同时显著减少重复画面所占空间。
+        "-vf", f"fps={fps}",
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-tune", "stillimage",
+        "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
+
+        # 原始 TTS 是单声道语音，不需要高码率立体声音轨。
+        "-c:a", "aac",
+        "-b:a", audio_bitrate,
+        "-ac", "1",
+        "-ar", "24000",
+
+        "-movflags", "+faststart",
+        str(output_path.resolve()),
+    ]
+
+    run_cmd(cmd)
+
+
 def build_video(paper_dir: str | Path, pdf_path: str | Path):
     # pdf转文本和图片
     pages, page_images = parse_pdf(
@@ -830,10 +880,17 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
         output_dir=fr"{paper_dir}\output\segments",
     )
 
-    # 合成视频
+    # 合成高质量视频
+    final_path = Path(paper_dir) / "output" / "final.mp4"
     concat_segment_videos(
         video_files=video_files,
-        output_path=fr"{paper_dir}\output\final.mp4",
+        output_path=final_path,
+    )
+
+    # 另外生成一个体积更小、兼容性较好的社交平台发布版
+    compress_video_for_social(
+        input_path=final_path,
+        output_path=Path(paper_dir) / "output" / "final_social.mp4",
     )
 
 if __name__ == "__main__":
