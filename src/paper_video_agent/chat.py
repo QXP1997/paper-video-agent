@@ -5,7 +5,12 @@ from pathlib import Path
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_deepseek import ChatDeepSeek
 
-from push_agent.models import PaperScript
+from paper_video_agent.models import (
+    PaperPlan,
+    PaperScript,
+    VideoChapterPlan,
+    VideoChapterScript,
+)
 
 
 def _load_local_env() -> None:
@@ -35,7 +40,7 @@ def _load_local_env() -> None:
 _load_local_env()
 
 
-prompt = ChatPromptTemplate.from_messages([
+chapter_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
 #         """
@@ -308,40 +313,94 @@ prompt = ChatPromptTemplate.from_messages([
 
 # 十一、输出要求
 
-最终输出一个 PaperScript。
+当前调用只生成一个完整的视频章节，并输出 VideoChapterScript。
 
-PaperScript 包含：
+这里的“视频章节”是为了视频叙事而规划的内容单元，不是论文原有的 Introduction、Method、Experiments 等章节。一个视频章节可以跨越、合并或重新排列论文原有章节中的信息。
 
-title：
-一个适合作为视频标题的中文标题。
+VideoChapterScript 包含：
 
-要求：
-- 能准确反映论文核心内容
-- 突出最值得关注的点
-- 不要纯粹直译英文论文标题
-- 不要标题党
-- 不得夸大论文结论
-
-
-segments：按照最终视频播放顺序排列。
+- chapter_id：必须与当前视频章节规划完全一致。
+- title：必须与当前视频章节规划完全一致。
+- segments：当前视频章节内按播放顺序排列的所有片段。
 
 每个 segment 包含：
 
-page：当前解说最适合作为视频背景的 PDF 页码。
+- page：当前解说最适合作为视频背景的 PDF 页码。
+- text：当前这一段完整的中文视频口播稿。
 
-text：当前这一段完整的中文视频口播稿。
+# 十二、连续性要求
+
+1. previous_chapters 包含此前已经生成的全部视频章节和全部 segments。把它们视为已经录制、不可修改的前文。
+2. 不得重复前文已经解释过的概念、论点、数字和例子，除非为了衔接而需要一句非常简短的回顾。
+3. 如果存在前文，当前章节开头必须自然承接前文最后一个 segment 的思想，而不是机械地说“下面进入第几部分”；第一章则使用 video_plan.opening_hook 所规划的切入点。
+4. 当前章节内部的所有 segments 必须在这一次调用中一起生成，形成完整的小叙事弧线。
+5. 如果存在 next_chapter，当前章节结尾应根据 transition_goal 自然引向下一章，但不要提前详细展开；如果 next_chapter 为 null，则自然收束整期视频。
+6. previous_chapters 只用于保持叙事、措辞和术语连续，不能作为论文事实证据；所有事实仍必须由 paper_content 支持。
+7. 只输出当前视频章节，不要重写前文，也不要生成其他章节。
 
         """
     ),
     (
         "human",
         """
-请根据下面的论文内容生成视频解说稿。
+请根据下面的信息生成当前视频章节的全部口播 segments。
+
+整期视频规划：
+
+{video_plan}
+
+当前视频章节规划：
+
+{current_chapter}
+
+此前已生成的全部视频章节（第一章时为空数组）：
+
+{previous_chapters}
+
+下一个视频章节规划（最后一章时为 null）：
+
+{next_chapter}
 
 论文内容：
 
 {paper_content}
 """
+    ),
+])
+
+
+planning_prompt = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """
+你是一名 AI 论文精讲视频的总编导。请先完整理解论文，再规划整期视频的叙事结构。
+
+你规划的是“视频章节”，不是照抄论文原有的 Introduction、Related Work、Method、Experiments、Conclusion 等章节。视频章节必须服务于观众的理解，可以跨越、合并、拆分或重新排列论文原有章节中的信息。
+
+规划要求：
+
+1. 根据论文实际内容规划 4 至 8 个视频章节。
+2. 每个章节只承担一个清晰的叙事任务，章节之间共同构成连续的解释链。
+3. 第一章应尽快说明论文为什么值得关注，可以从现实问题、技术矛盾、反直觉结论或关键结果切入。
+4. 中间章节应讲清问题、整体思路、关键机制、设计原因、实验验证和作者分析，具体顺序由论文内容决定。
+5. 最后一章应完成结论、实际意义和必要的局限讨论，但不要机械套用固定模板。
+6. 各章节的 key_points 不应重复；重要数字、术语和例子应安排在最适合首次解释它们的章节。
+7. source_pages 必须使用输入中真实存在的 PDF 页码。它们是事实依据，不代表视频章节必须遵循论文页序。
+8. transition_goal 描述当前章节应把观众的注意力自然带向哪里，不要写“下面进入下一章”一类机械转场。
+9. 章节标题将直接显示在竖屏视频顶部的进度导航中，使用 2 至 8 个汉字，准确、简短、有辨识度，不使用序号和标点。
+10. chapter_id 按 chapter_01、chapter_02 的格式连续编号。
+11. 不得编造论文没有的方法、数据、因果关系或结论。
+
+只输出 PaperPlan，不要提前撰写各章节的完整口播稿。
+""",
+    ),
+    (
+        "human",
+        """
+请为下面的论文规划一期中文精讲视频：
+
+{paper_content}
+""",
     ),
 ])
 
@@ -360,17 +419,165 @@ llm = ChatDeepSeek(
     }
 )
 
-structured_llm = llm.with_structured_output(
-    PaperScript,
+planning_llm = llm.with_structured_output(
+    PaperPlan,
     method="function_calling",
     include_raw=True,
 )
 
-chain = prompt | structured_llm
+chapter_llm = llm.with_structured_output(
+    VideoChapterScript,
+    method="function_calling",
+    include_raw=True,
+)
+
+planning_chain = planning_prompt | planning_llm
+chapter_chain = chapter_prompt | chapter_llm
+
+
+def invoke_structured_with_retry(
+    chain,
+    values: dict,
+    stage: str,
+    max_attempts: int = 3,
+):
+    """Retry transient empty/invalid structured responses with useful diagnostics."""
+    diagnostics = []
+    last_exception = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = chain.invoke(values)
+        except Exception as exc:
+            last_exception = exc
+            diagnostics.append(
+                f"第 {attempt} 次调用异常: {type(exc).__name__}: {exc}"
+            )
+        else:
+            parsed = result.get("parsed")
+
+            if parsed is not None:
+                return parsed
+
+            raw = result.get("raw")
+            raw_content = str(getattr(raw, "content", ""))[:500]
+            tool_calls = getattr(raw, "tool_calls", []) or []
+            finish_reason = (
+                getattr(raw, "response_metadata", {}) or {}
+            ).get("finish_reason")
+            diagnostics.append(
+                f"第 {attempt} 次没有结构化结果: "
+                f"parsing_error={result.get('parsing_error')!r}, "
+                f"finish_reason={finish_reason!r}, "
+                f"tool_calls={len(tool_calls)}, "
+                f"content={raw_content!r}"
+            )
+
+        if attempt < max_attempts:
+            print(
+                f"{stage}结构化输出失败，"
+                f"正在重试 {attempt + 1}/{max_attempts}..."
+            )
+
+    message = f"{stage}连续 {max_attempts} 次未返回有效结构化结果"
+    details = "\n".join(diagnostics)
+
+    if last_exception is not None:
+        raise RuntimeError(f"{message}\n{details}") from last_exception
+
+    raise RuntimeError(f"{message}\n{details}")
+
+
+def generate_video_plan(
+    paper_content: str,
+    available_pages: set[int],
+) -> PaperPlan:
+    plan = invoke_structured_with_retry(
+        chain=planning_chain,
+        values={
+            "paper_content": paper_content,
+        },
+        stage="视频章节规划",
+    )
+
+    normalized_chapters = []
+
+    for index, chapter in enumerate(plan.chapters, start=1):
+        source_pages = list(dict.fromkeys(
+            page
+            for page in chapter.source_pages
+            if page in available_pages
+        ))
+
+        if not source_pages:
+            raise ValueError(
+                f"视频章节“{chapter.title}”没有有效的论文来源页"
+            )
+
+        normalized_chapters.append(
+            chapter.model_copy(update={
+                "chapter_id": f"chapter_{index:02d}",
+                "source_pages": source_pages,
+            })
+        )
+
+    return plan.model_copy(update={
+        "chapters": normalized_chapters,
+    })
+
+
+def generate_video_chapter(
+    paper_content: str,
+    video_plan: PaperPlan,
+    current_chapter: VideoChapterPlan,
+    previous_chapters: list[VideoChapterScript],
+    next_chapter: VideoChapterPlan | None,
+    available_pages: set[int],
+) -> VideoChapterScript:
+    chapter_script = invoke_structured_with_retry(
+        chain=chapter_chain,
+        values={
+            "paper_content": paper_content,
+            "video_plan": video_plan.model_dump_json(indent=2),
+            "current_chapter": current_chapter.model_dump_json(indent=2),
+            # Deliberately pass every previously generated segment without summarizing.
+            "previous_chapters": json.dumps(
+                [chapter.model_dump() for chapter in previous_chapters],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "next_chapter": (
+                next_chapter.model_dump_json(indent=2)
+                if next_chapter is not None
+                else "null"
+            ),
+        },
+        stage=f"视频章节“{current_chapter.title}”",
+    )
+
+    invalid_pages = sorted({
+        segment.page
+        for segment in chapter_script.segments
+        if segment.page not in available_pages
+    })
+
+    if invalid_pages:
+        raise ValueError(
+            f"视频章节“{current_chapter.title}”使用了不存在的页码: "
+            f"{invalid_pages}"
+        )
+
+    return chapter_script.model_copy(update={
+        "chapter_id": current_chapter.chapter_id,
+        "title": current_chapter.title,
+    })
 
 def generate_paper_script(
     _pages: list[dict],
 ) -> PaperScript:
+
+    if not _pages:
+        raise ValueError("论文页面不能为空")
 
     paper_content = json.dumps(
         [{
@@ -379,15 +586,55 @@ def generate_paper_script(
         } for page in _pages],
         ensure_ascii=False,
     )
+    available_pages = {
+        int(page["page"])
+        for page in _pages
+    }
 
-    result = chain.invoke({
-        "paper_content": paper_content,
-    })
-    result = result["parsed"]
-    print(result.title)
+    print("正在规划视频章节...")
+    video_plan = generate_video_plan(
+        paper_content=paper_content,
+        available_pages=available_pages,
+    )
+    print(f"视频标题: {video_plan.video_title}")
 
-    for segment in result.segments:
-        print(segment.page)
-        print(segment.text)
+    for index, chapter in enumerate(video_plan.chapters, start=1):
+        print(
+            f"  {index}/{len(video_plan.chapters)} "
+            f"{chapter.title}"
+        )
 
-    return result
+    generated_chapters: list[VideoChapterScript] = []
+
+    for index, current_chapter in enumerate(video_plan.chapters):
+        next_chapter = (
+            video_plan.chapters[index + 1]
+            if index + 1 < len(video_plan.chapters)
+            else None
+        )
+
+        print(
+            f"正在生成视频章节 "
+            f"{index + 1}/{len(video_plan.chapters)}: "
+            f"{current_chapter.title}"
+        )
+
+        chapter_script = generate_video_chapter(
+            paper_content=paper_content,
+            video_plan=video_plan,
+            current_chapter=current_chapter,
+            previous_chapters=generated_chapters,
+            next_chapter=next_chapter,
+            available_pages=available_pages,
+        )
+        generated_chapters.append(chapter_script)
+
+        print(
+            f"章节完成，共 {len(chapter_script.segments)} 个 segments"
+        )
+
+    return PaperScript(
+        title=video_plan.video_title,
+        plan=video_plan,
+        chapters=generated_chapters,
+    )

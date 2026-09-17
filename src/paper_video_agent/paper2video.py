@@ -1,10 +1,13 @@
+import asyncio
+import json
 import subprocess
-import edge_tts, asyncio, json
 from pathlib import Path
 
-from push_agent.chat import generate_paper_script
-from push_agent.models import PaperScript
-from push_agent.pdf_util import parse_pdf
+import edge_tts
+
+from paper_video_agent.chat import generate_paper_script
+from paper_video_agent.models import PaperScript
+from paper_video_agent.pdf_util import parse_pdf
 
 
 def save_paper_script(
@@ -99,45 +102,71 @@ async def generate_script_audio(
 
     manifest = {
         "title": _script.title,
+        "chapters": [],
         "segments": [],
     }
 
-    for index, segment in enumerate(
-        _script.segments,
+    total_segments = sum(
+        len(chapter.segments)
+        for chapter in _script.chapters
+    )
+    segment_index = 0
+    chapter_count = len(_script.chapters)
+
+    for chapter_index, chapter in enumerate(
+        _script.chapters,
         start=1,
     ):
-        audio_name = (
-            f"segment_{index:03d}.mp3"
-        )
+        chapter_segment_start = segment_index + 1
+        chapter_segment_count = len(chapter.segments)
 
-        audio_path = (
-            output_dir / audio_name
-        )
+        for chapter_segment_index, segment in enumerate(
+            chapter.segments,
+            start=1,
+        ):
+            segment_index += 1
+            audio_name = f"segment_{segment_index:03d}.mp3"
+            audio_path = output_dir / audio_name
 
-        print(
-            f"生成 TTS: "
-            f"{index}/{len(_script.segments)}"
-        )
+            print(
+                f"生成 TTS: {segment_index}/{total_segments} "
+                f"[{chapter.title} "
+                f"{chapter_segment_index}/{chapter_segment_count}]"
+            )
 
-        words = await generate_tts(
-            text=segment.text,
-            output_mp3=audio_path,
-        )
+            words = await generate_tts(
+                text=segment.text,
+                output_mp3=audio_path,
+            )
 
-        manifest["segments"].append({
-            "index": index,
+            manifest["segments"].append({
+                "index": segment_index,
+                "chapter_id": chapter.chapter_id,
+                "chapter_index": chapter_index,
+                "chapter_count": chapter_count,
+                "chapter_title": chapter.title,
+                "chapter_segment_index": chapter_segment_index,
+                "chapter_segment_count": chapter_segment_count,
 
-            # 视频需要展示的论文页
-            "page": segment.page,
+                # 视频需要展示的论文页
+                "page": segment.page,
 
-            # 原始解说内容
-            "text": segment.text,
+                # 原始解说内容
+                "text": segment.text,
 
-            # 用相对路径，方便以后移动整个目录
-            "audio_file": audio_name,
+                # 用相对路径，方便以后移动整个目录
+                "audio_file": audio_name,
 
-            # edge-tts 给出的语音级时间
-            "words": words,
+                # edge-tts 给出的语音级时间
+                "words": words,
+            })
+
+        manifest["chapters"].append({
+            "chapter_id": chapter.chapter_id,
+            "index": chapter_index,
+            "title": chapter.title,
+            "segment_start": chapter_segment_start,
+            "segment_end": segment_index,
         })
 
     manifest_path = (
@@ -317,11 +346,96 @@ def run_cmd(
         check=True,
     )
 
+
+def escape_drawtext_text(text: str) -> str:
+    """Escape user/model-generated text for FFmpeg's drawtext filter."""
+    return (
+        text
+        .replace("\\", r"\\")
+        .replace("'", r"\'")
+        .replace(":", r"\:")
+        .replace("%", r"\%")
+    )
+
+
+def build_chapter_navigation_filters(
+    chapters: list[dict],
+    current_chapter_index: int,
+    width: int,
+) -> list[str]:
+    """Build a fixed top navigation bar with the active video chapter highlighted."""
+    if not chapters:
+        return []
+
+    margin_x = 36
+    navigation_width = width - margin_x * 2
+    cell_width = navigation_width / len(chapters)
+    longest_title = max(
+        len(str(chapter["title"]))
+        for chapter in chapters
+    )
+    font_size = max(
+        14,
+        min(22, int((cell_width - 12) / max(longest_title, 1))),
+    )
+    font_path = Path("C:/Windows/Fonts/msyh.ttc")
+    font_option = (
+        f"fontfile='{escape_drawtext_text(font_path.as_posix())}'"
+        if font_path.is_file()
+        else "font='Microsoft YaHei'"
+    )
+
+    filters = [
+        (
+            f"drawbox=x=24:y=24:w={width - 48}:h=116:"
+            "color=white@0.90:t=fill"
+        ),
+    ]
+
+    for chapter in chapters:
+        chapter_index = int(chapter["index"])
+        title = escape_drawtext_text(str(chapter["title"]))
+        cell_x = margin_x + round((chapter_index - 1) * cell_width)
+        next_cell_x = margin_x + round(chapter_index * cell_width)
+        actual_cell_width = next_cell_x - cell_x
+
+        if chapter_index < current_chapter_index:
+            bar_color = "0x3B82F6"
+            text_color = "0x475569"
+        elif chapter_index == current_chapter_index:
+            bar_color = "0xF97316"
+            text_color = "0xC2410C"
+        else:
+            bar_color = "0xCBD5E1"
+            text_color = "0x94A3B8"
+
+        filters.extend([
+            (
+                f"drawbox=x={cell_x + 4}:y=42:"
+                f"w={max(1, actual_cell_width - 8)}:h=7:"
+                f"color={bar_color}:t=fill"
+            ),
+            (
+                "drawtext="
+                f"{font_option}:"
+                f"text='{title}':"
+                f"fontcolor={text_color}:"
+                f"fontsize={font_size}:"
+                f"x={cell_x + actual_cell_width / 2}-text_w/2:"
+                "y=72"
+            ),
+        ])
+
+    return filters
+
+
 def build_segment_video(
     image_path: Path,
     audio_path: Path,
     subtitle_path: Path,
     output_path: Path,
+    chapters: list[dict],
+    current_chapter_index: int,
     width: int = 1080,
     height: int = 1920,
     fps: int = 30,
@@ -335,24 +449,33 @@ def build_segment_video(
     # 所以直接把工作目录切到 srt 所在目录
     subtitle_name = subtitle_path.name
 
-    vf = (
-        f"scale={width}:{height}:"
-        "force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:"
-        "(ow-iw)/2:(oh-ih)/2:white,"
-        f"subtitles={subtitle_name}:"
-        "force_style='"
-        "FontName=Microsoft YaHei,"
-        "FontSize=26,"
-        "PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00000000,"
-        "BorderStyle=1,"
-        "Outline=2,"
-        "Shadow=0,"
-        "Alignment=2,"
-        "MarginV=120"
-        "'"
-    )
+    filters = [
+        (
+            f"scale={width}:{height}:"
+            "force_original_aspect_ratio=decrease"
+        ),
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:white",
+        (
+            f"subtitles={subtitle_name}:"
+            "force_style='"
+            "FontName=Microsoft YaHei,"
+            "FontSize=8,"
+            "PrimaryColour=&H00FFFFFF,"
+            "OutlineColour=&H00000000,"
+            "BorderStyle=1,"
+            "Outline=1,"
+            "Shadow=0,"
+            "Alignment=2,"
+            "MarginV=24"
+            "'"
+        ),
+    ]
+    filters.extend(build_chapter_navigation_filters(
+        chapters=chapters,
+        current_chapter_index=current_chapter_index,
+        width=width,
+    ))
+    vf = ",".join(filters)
 
     cmd = [
         "ffmpeg",
@@ -464,6 +587,8 @@ def build_all_segment_videos(
             audio_path=audio_path,
             subtitle_path=subtitle_path,
             output_path=video_path,
+            chapters=manifest["chapters"],
+            current_chapter_index=segment["chapter_index"],
         )
 
         video_files.append(
@@ -576,6 +701,6 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
     )
 
 if __name__ == "__main__":
-    PAPER_DIR = r"D:\push_agent\paper\test2"
+    PAPER_DIR = r"D:\push_agent\paper\test3"
     PDF_PATH = r"D:\push_agent\paper\2609.11977v1.pdf"
     build_video(PAPER_DIR, PDF_PATH)
