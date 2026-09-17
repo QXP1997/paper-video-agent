@@ -174,6 +174,8 @@ async def generate_script_audio(
         / "audio_manifest.json"
     )
 
+    enrich_manifest_timeline(manifest)
+
     manifest_path.write_text(
         json.dumps(
             manifest,
@@ -183,6 +185,57 @@ async def generate_script_audio(
         encoding="utf-8",
     )
 
+    return manifest
+
+
+def enrich_manifest_timeline(manifest: dict) -> dict:
+    """Add timeline fields used by the animated chapter progress bar.
+
+    Older manifests did not contain durations, so derive them from the final
+    word timestamp. This keeps existing TTS output reusable when the video
+    renderer changes.
+    """
+    chapters_by_index = {
+        int(chapter["index"]): chapter
+        for chapter in manifest.get("chapters", [])
+    }
+    chapter_elapsed: dict[int, float] = {
+        chapter_index: 0.0
+        for chapter_index in chapters_by_index
+    }
+    total_elapsed = 0.0
+
+    for segment in manifest.get("segments", []):
+        words = segment.get("words") or []
+        inferred_duration = (
+            float(words[-1].get("end", 0.0))
+            if words
+            else 0.0
+        )
+        duration = max(
+            0.001,
+            float(segment.get("duration") or inferred_duration),
+        )
+        chapter_index = int(segment["chapter_index"])
+        elapsed_in_chapter = chapter_elapsed.get(chapter_index, 0.0)
+
+        segment["duration"] = round(duration, 3)
+        segment["start_time"] = round(total_elapsed, 3)
+        segment["chapter_elapsed"] = round(elapsed_in_chapter, 3)
+
+        total_elapsed += duration
+        chapter_elapsed[chapter_index] = elapsed_in_chapter + duration
+
+    chapter_start = 0.0
+    for chapter in manifest.get("chapters", []):
+        chapter_index = int(chapter["index"])
+        duration = chapter_elapsed.get(chapter_index, 0.0)
+        chapter["start_time"] = round(chapter_start, 3)
+        chapter["duration"] = round(duration, 3)
+        chapter["end_time"] = round(chapter_start + duration, 3)
+        chapter_start += duration
+
+    manifest["duration"] = round(total_elapsed, 3)
     return manifest
 
 #########################生产srt字幕##############################
@@ -361,9 +414,12 @@ def escape_drawtext_text(text: str) -> str:
 def build_chapter_navigation_filters(
     chapters: list[dict],
     current_chapter_index: int,
+    chapter_elapsed: float,
+    segment_duration: float,
+    chapter_duration: float,
     width: int,
 ) -> list[str]:
-    """Build a fixed top navigation bar with the active video chapter highlighted."""
+    """Build a chapter progress bar that advances while the segment plays."""
     if not chapters:
         return []
 
@@ -390,7 +446,79 @@ def build_chapter_navigation_filters(
             f"drawbox=x=24:y=24:w={width - 48}:h=116:"
             "color=white@0.90:t=fill"
         ),
+        (
+            f"drawbox=x={margin_x}:y=42:w={navigation_width}:h=8:"
+            "color=0xCBD5E1:t=fill"
+        ),
     ]
+
+    current_cell_x = margin_x + round(
+        (current_chapter_index - 1) * cell_width
+    )
+    current_cell_end = margin_x + round(
+        current_chapter_index * cell_width
+    )
+    current_cell_width = current_cell_end - current_cell_x
+
+    # Completed chapters stay blue. The current chapter fills orange based on
+    # its elapsed audio time, including a few pixels that appear during this
+    # segment as FFmpeg's local `t` advances.
+    completed_width = current_cell_x - margin_x
+    if completed_width > 0:
+        filters.append(
+            f"drawbox=x={margin_x}:y=42:w={completed_width}:h=8:"
+            "color=0x3B82F6:t=fill"
+        )
+
+    safe_chapter_duration = max(chapter_duration, 0.001)
+    start_progress = min(
+        1.0,
+        max(0.0, chapter_elapsed / safe_chapter_duration),
+    )
+    end_progress = min(
+        1.0,
+        max(
+            start_progress,
+            (chapter_elapsed + segment_duration) / safe_chapter_duration,
+        ),
+    )
+    static_end_x = current_cell_x + int(
+        current_cell_width * start_progress
+    )
+    dynamic_end_x = current_cell_x + round(
+        current_cell_width * end_progress
+    )
+
+    if static_end_x > current_cell_x:
+        filters.append(
+            f"drawbox=x={current_cell_x}:y=42:"
+            f"w={static_end_x - current_cell_x}:h=8:"
+            "color=0xF97316:t=fill"
+        )
+
+    for pixel_x in range(static_end_x, dynamic_end_x):
+        pixel_progress = (
+            (pixel_x + 0.5 - current_cell_x)
+            / max(current_cell_width, 1)
+        )
+        activation_time = max(
+            0.0,
+            pixel_progress * safe_chapter_duration - chapter_elapsed,
+        )
+        filters.append(
+            f"drawbox=x={pixel_x}:y=42:w=1:h=8:"
+            "color=0xF97316:t=fill:"
+            f"enable='gte(t,{activation_time:.3f})'"
+        )
+
+    # Small separators make the chapter boundaries readable without turning
+    # the bar back into a row of independent tabs.
+    for boundary_index in range(1, len(chapters)):
+        boundary_x = margin_x + round(boundary_index * cell_width)
+        filters.append(
+            f"drawbox=x={boundary_x}:y=39:w=2:h=14:"
+            "color=white@0.95:t=fill"
+        )
 
     for chapter in chapters:
         chapter_index = int(chapter["index"])
@@ -400,21 +528,13 @@ def build_chapter_navigation_filters(
         actual_cell_width = next_cell_x - cell_x
 
         if chapter_index < current_chapter_index:
-            bar_color = "0x3B82F6"
             text_color = "0x475569"
         elif chapter_index == current_chapter_index:
-            bar_color = "0xF97316"
             text_color = "0xC2410C"
         else:
-            bar_color = "0xCBD5E1"
             text_color = "0x94A3B8"
 
-        filters.extend([
-            (
-                f"drawbox=x={cell_x + 4}:y=42:"
-                f"w={max(1, actual_cell_width - 8)}:h=7:"
-                f"color={bar_color}:t=fill"
-            ),
+        filters.append(
             (
                 "drawtext="
                 f"{font_option}:"
@@ -423,8 +543,8 @@ def build_chapter_navigation_filters(
                 f"fontsize={font_size}:"
                 f"x={cell_x + actual_cell_width / 2}-text_w/2:"
                 "y=72"
-            ),
-        ])
+            )
+        )
 
     return filters
 
@@ -436,6 +556,9 @@ def build_segment_video(
     output_path: Path,
     chapters: list[dict],
     current_chapter_index: int,
+    chapter_elapsed: float,
+    segment_duration: float,
+    chapter_duration: float,
     width: int = 1080,
     height: int = 1920,
     fps: int = 30,
@@ -473,6 +596,9 @@ def build_segment_video(
     filters.extend(build_chapter_navigation_filters(
         chapters=chapters,
         current_chapter_index=current_chapter_index,
+        chapter_elapsed=chapter_elapsed,
+        segment_duration=segment_duration,
+        chapter_duration=chapter_duration,
         width=width,
     ))
     vf = ",".join(filters)
@@ -535,6 +661,11 @@ def build_all_segment_videos(
             encoding="utf-8"
         )
     )
+    enrich_manifest_timeline(manifest)
+    chapters_by_index = {
+        int(chapter["index"]): chapter
+        for chapter in manifest["chapters"]
+    }
 
     video_files = []
 
@@ -589,6 +720,11 @@ def build_all_segment_videos(
             output_path=video_path,
             chapters=manifest["chapters"],
             current_chapter_index=segment["chapter_index"],
+            chapter_elapsed=float(segment["chapter_elapsed"]),
+            segment_duration=float(segment["duration"]),
+            chapter_duration=float(
+                chapters_by_index[int(segment["chapter_index"])]["duration"]
+            ),
         )
 
         video_files.append(
