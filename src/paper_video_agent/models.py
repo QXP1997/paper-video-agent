@@ -6,7 +6,10 @@ class ScriptSegment(BaseModel):
 
     page: int = Field(
         ge=1,
-        description="播放当前解说内容时应该展示的 PDF 页码",
+        description=(
+            "播放当前解说时最适合作为主要背景的 PDF 页码；"
+            "口播可以综合论文其他页面的信息"
+        ),
     )
 
     text: str = Field(
@@ -34,14 +37,27 @@ class VideoChapterPlan(BaseModel):
         description="这一视频章节需要帮助观众理解什么",
     )
 
+    guiding_question: str = Field(
+        min_length=1,
+        description="本章节要替观众回答的一个核心问题",
+    )
+
     key_points: list[str] = Field(
         min_length=1,
         description="这一视频章节必须讲清楚的关键点",
     )
 
+    takeaway: str = Field(
+        min_length=1,
+        description="本章节讲完后观众应该能用自己的话复述的一句话结论",
+    )
+
     source_pages: list[int] = Field(
         min_length=1,
-        description="支持这一章节的论文页码，可以跨越论文原有章节",
+        description=(
+            "支持本章节的主要论文页码，可以跨越论文原有章节；"
+            "它们用于规划证据和画面，不限制口播只能引用这些页面"
+        ),
     )
 
     transition_goal: str = Field(
@@ -61,6 +77,22 @@ class PaperPlan(BaseModel):
     core_message: str = Field(
         min_length=1,
         description="整期视频希望观众最终记住的核心信息",
+    )
+
+    central_question: str = Field(
+        min_length=1,
+        description="论文试图回答的核心问题，用非论文式语言表达",
+    )
+
+    story_spine: list[str] = Field(
+        min_length=3,
+        max_length=7,
+        description="从问题、困难、方案到证据与边界的因果解释链",
+    )
+
+    teaching_anchor: str | None = Field(
+        default=None,
+        description="帮助理解全文的贯穿案例、类比或思想实验；不适合时为空",
     )
 
     opening_hook: str = Field(

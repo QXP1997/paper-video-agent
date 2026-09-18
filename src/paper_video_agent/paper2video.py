@@ -38,6 +38,7 @@ async def generate_tts(
     output_mp3: Path,
     voice: str = "zh-CN-XiaoxiaoNeural",
     rate: str = "+0%",
+    max_attempts: int = 5,
 ) -> list[dict]:
 
     output_mp3.parent.mkdir(
@@ -45,47 +46,57 @@ async def generate_tts(
         exist_ok=True,
     )
 
-    communicate = edge_tts.Communicate(
-        text=text,
-        voice=voice,
-        rate=rate,
-        boundary="WordBoundary",
+    temporary_path = output_mp3.with_suffix(
+        output_mp3.suffix + ".part"
     )
 
-    words = []
+    for attempt in range(1, max_attempts + 1):
+        words = []
+        temporary_path.unlink(missing_ok=True)
 
-    with output_mp3.open("wb") as audio_file:
+        try:
+            communicate = edge_tts.Communicate(
+                text=text,
+                voice=voice,
+                rate=rate,
+                boundary="WordBoundary",
+            )
 
-        async for chunk in communicate.stream():
+            with temporary_path.open("wb") as audio_file:
+                async for chunk in communicate.stream():
+                    # 写入音频
+                    if chunk["type"] == "audio":
+                        audio_file.write(chunk["data"])
 
-            # 写入音频
-            if chunk["type"] == "audio":
-                audio_file.write(
-                    chunk["data"]
-                )
+                    # 保存词级时间戳
+                    elif chunk["type"] == "WordBoundary":
+                        start = chunk["offset"] / 10_000_000
+                        duration = chunk["duration"] / 10_000_000
+                        words.append({
+                            "text": chunk["text"],
+                            "start": round(start, 3),
+                            "end": round(start + duration, 3),
+                        })
 
-            # 保存词级时间戳
-            elif chunk["type"] == "WordBoundary":
-                start = (
-                    chunk["offset"]
-                    / 10_000_000
-                )
+            if temporary_path.stat().st_size <= 0 or not words:
+                raise RuntimeError("TTS 返回了空音频或空时间戳")
 
-                duration = (
-                    chunk["duration"]
-                    / 10_000_000
-                )
+            temporary_path.replace(output_mp3)
+            return words
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
 
-                words.append({
-                    "text": chunk["text"],
-                    "start": round(start, 3),
-                    "end": round(
-                        start + duration,
-                        3,
-                    ),
-                })
+            if attempt >= max_attempts:
+                raise
 
-    return words
+            delay = min(2 ** attempt, 15)
+            print(
+                f"TTS 网络调用失败，{delay} 秒后重试 "
+                f"{attempt + 1}/{max_attempts}..."
+            )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError("TTS 生成失败")
 
 
 # 生成视频segment.mp3以及audio_manifest.json
@@ -100,6 +111,22 @@ async def generate_script_audio(
         exist_ok=True,
     )
 
+    manifest_path = output_dir / "audio_manifest.json"
+    existing_manifest = None
+
+    if manifest_path.exists():
+        try:
+            existing_manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            existing_manifest = None
+
+    reusable_segments = {
+        int(segment["index"]): segment
+        for segment in (existing_manifest or {}).get("segments", [])
+    }
+
     manifest = {
         "title": _script.title,
         "chapters": [],
@@ -113,11 +140,29 @@ async def generate_script_audio(
     segment_index = 0
     chapter_count = len(_script.chapters)
 
+    chapter_segment_cursor = 1
     for chapter_index, chapter in enumerate(
         _script.chapters,
         start=1,
     ):
-        chapter_segment_start = segment_index + 1
+        chapter_segment_count = len(chapter.segments)
+        manifest["chapters"].append({
+            "chapter_id": chapter.chapter_id,
+            "index": chapter_index,
+            "title": chapter.title,
+            "segment_start": chapter_segment_cursor,
+            "segment_end": (
+                chapter_segment_cursor
+                + chapter_segment_count
+                - 1
+            ),
+        })
+        chapter_segment_cursor += chapter_segment_count
+
+    for chapter_index, chapter in enumerate(
+        _script.chapters,
+        start=1,
+    ):
         chapter_segment_count = len(chapter.segments)
 
         for chapter_segment_index, segment in enumerate(
@@ -128,62 +173,66 @@ async def generate_script_audio(
             audio_name = f"segment_{segment_index:03d}.mp3"
             audio_path = output_dir / audio_name
 
-            print(
-                f"生成 TTS: {segment_index}/{total_segments} "
-                f"[{chapter.title} "
-                f"{chapter_segment_index}/{chapter_segment_count}]"
+            reusable = reusable_segments.get(segment_index)
+            can_reuse = (
+                reusable is not None
+                and reusable.get("text") == segment.text
+                and int(reusable.get("page", -1)) == segment.page
+                and reusable.get("words")
+                and audio_path.exists()
+                and audio_path.stat().st_size > 0
             )
 
-            words = await generate_tts(
-                text=segment.text,
-                output_mp3=audio_path,
+            if can_reuse:
+                print(
+                    f"复用 TTS: {segment_index}/{total_segments} "
+                    f"[{chapter.title} "
+                    f"{chapter_segment_index}/{chapter_segment_count}]"
+                )
+                segment_manifest = reusable
+            else:
+                print(
+                    f"生成 TTS: {segment_index}/{total_segments} "
+                    f"[{chapter.title} "
+                    f"{chapter_segment_index}/{chapter_segment_count}]"
+                )
+                words = await generate_tts(
+                    text=segment.text,
+                    output_mp3=audio_path,
+                )
+
+                segment_manifest = {
+                    "index": segment_index,
+                    "chapter_id": chapter.chapter_id,
+                    "chapter_index": chapter_index,
+                    "chapter_count": chapter_count,
+                    "chapter_title": chapter.title,
+                    "chapter_segment_index": chapter_segment_index,
+                    "chapter_segment_count": chapter_segment_count,
+
+                    # 视频需要展示的论文页
+                    "page": segment.page,
+
+                    # 原始解说内容
+                    "text": segment.text,
+
+                    # 用相对路径，方便以后移动整个目录
+                    "audio_file": audio_name,
+
+                    # edge-tts 给出的语音级时间
+                    "words": words,
+                }
+
+            manifest["segments"].append(segment_manifest)
+            enrich_manifest_timeline(manifest)
+            manifest_path.write_text(
+                json.dumps(
+                    manifest,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
             )
-
-            manifest["segments"].append({
-                "index": segment_index,
-                "chapter_id": chapter.chapter_id,
-                "chapter_index": chapter_index,
-                "chapter_count": chapter_count,
-                "chapter_title": chapter.title,
-                "chapter_segment_index": chapter_segment_index,
-                "chapter_segment_count": chapter_segment_count,
-
-                # 视频需要展示的论文页
-                "page": segment.page,
-
-                # 原始解说内容
-                "text": segment.text,
-
-                # 用相对路径，方便以后移动整个目录
-                "audio_file": audio_name,
-
-                # edge-tts 给出的语音级时间
-                "words": words,
-            })
-
-        manifest["chapters"].append({
-            "chapter_id": chapter.chapter_id,
-            "index": chapter_index,
-            "title": chapter.title,
-            "segment_start": chapter_segment_start,
-            "segment_end": segment_index,
-        })
-
-    manifest_path = (
-        output_dir
-        / "audio_manifest.json"
-    )
-
-    enrich_manifest_timeline(manifest)
-
-    manifest_path.write_text(
-        json.dumps(
-            manifest,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
 
     return manifest
 
@@ -290,26 +339,49 @@ def build_subtitles(
         current_words = []
         current_text = ""
 
-    for word in words:
+    for word_index, word in enumerate(words):
         text = word["text"]
 
         if not text:
             continue
 
-        # 加上当前 word 会超长，先把上一条字幕提交
+        joins_identifier = (
+            bool(current_text)
+            and current_text[-1].isascii()
+            and current_text[-1].isalnum()
+            and text[0].isascii()
+            and text[0].isalnum()
+        )
+
+        # 加上当前 word 会超长，先把上一条字幕提交。英文数字组成的
+        # 连续标识符允许略微超长，避免把 pass3、GPT5 等拆成两条。
         if (
             current_words
             and len(current_text) + len(text) > max_chars
+            and not joins_identifier
         ):
             flush()
 
         current_words.append(word)
         current_text += text
 
-        # 长度差不多了，而且遇到了自然标点
+        next_text = (
+            str(words[word_index + 1].get("text", ""))
+            if word_index + 1 < len(words)
+            else ""
+        )
+        decimal_continues = (
+            text.endswith(".")
+            and text[:-1].isdigit()
+            and next_text[:1].isdigit()
+        )
+
+        # 长度差不多了，而且遇到了自然标点。版本号和小数中的
+        # 点不是句子边界，例如 Occamy-1.0 不能在 “1.” 后切开。
         if (
             len(current_text) >= min_chars
             and current_text[-1] in PUNCTUATIONS
+            and not decimal_continues
         ):
             flush()
 
@@ -818,14 +890,17 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
         zoom=2.0,
     )
 
-    # 生成论文脚本
-    script = generate_paper_script(pages["pages"])
+    script_path = Path(paper_dir) / "output" / "paper_script.json"
 
-    # 暂存脚本json
-    save_paper_script(
-        script,
-        fr"{paper_dir}\output\paper_script.json",
-    )
+    # 任务中断后优先复用已经生成完成的文案，避免重复调用模型。
+    if script_path.exists():
+        print(f"复用已有论文脚本: {script_path}")
+        script = PaperScript.model_validate_json(
+            script_path.read_text(encoding="utf-8")
+        )
+    else:
+        script = generate_paper_script(pages["pages"])
+        save_paper_script(script, script_path)
 
     # 保存segment视频片段
     asyncio.run(
@@ -865,6 +940,6 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
     )
 
 if __name__ == "__main__":
-    PAPER_DIR = r"D:\push_agent\paper\test3"
+    PAPER_DIR = r"D:\push_agent\paper\task4"
     PDF_PATH = r"D:\push_agent\paper\2609.11977v1.pdf"
     build_video(PAPER_DIR, PDF_PATH)
