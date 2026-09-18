@@ -414,16 +414,16 @@ def escape_drawtext_text(text: str) -> str:
 def build_chapter_navigation_filters(
     chapters: list[dict],
     current_chapter_index: int,
-    chapter_elapsed: float,
+    video_elapsed: float,
     segment_duration: float,
-    chapter_duration: float,
+    video_duration: float,
     width: int,
 ) -> list[str]:
     """Build a chapter progress bar that advances while the segment plays."""
     if not chapters:
         return []
 
-    margin_x = 36
+    margin_x = 0
     navigation_width = width - margin_x * 2
     cell_width = navigation_width / len(chapters)
     longest_title = max(
@@ -441,83 +441,60 @@ def build_chapter_navigation_filters(
         else "font='Microsoft YaHei'"
     )
 
+    panel_y = 0
+    panel_height = 88
     filters = [
         (
-            f"drawbox=x=24:y=24:w={width - 48}:h=116:"
-            "color=white@0.90:t=fill"
-        ),
-        (
-            f"drawbox=x={margin_x}:y=42:w={navigation_width}:h=8:"
-            "color=0xCBD5E1:t=fill"
+            f"drawbox=x=0:y={panel_y}:w={width}:h={panel_height}:"
+            "color=0x232522@0.96:t=fill"
         ),
     ]
 
-    current_cell_x = margin_x + round(
-        (current_chapter_index - 1) * cell_width
-    )
-    current_cell_end = margin_x + round(
-        current_chapter_index * cell_width
-    )
-    current_cell_width = current_cell_end - current_cell_x
-
-    # Completed chapters stay blue. The current chapter fills orange based on
-    # its elapsed audio time, including a few pixels that appear during this
-    # segment as FFmpeg's local `t` advances.
-    completed_width = current_cell_x - margin_x
-    if completed_width > 0:
-        filters.append(
-            f"drawbox=x={margin_x}:y=42:w={completed_width}:h=8:"
-            "color=0x3B82F6:t=fill"
-        )
-
-    safe_chapter_duration = max(chapter_duration, 0.001)
+    # The light gray region is the progress itself. It fills the complete bar
+    # according to elapsed time in the whole video; chapters are only markers.
+    safe_video_duration = max(video_duration, 0.001)
     start_progress = min(
         1.0,
-        max(0.0, chapter_elapsed / safe_chapter_duration),
+        max(0.0, video_elapsed / safe_video_duration),
     )
     end_progress = min(
         1.0,
         max(
             start_progress,
-            (chapter_elapsed + segment_duration) / safe_chapter_duration,
+            (video_elapsed + segment_duration) / safe_video_duration,
         ),
     )
-    static_end_x = current_cell_x + int(
-        current_cell_width * start_progress
-    )
-    dynamic_end_x = current_cell_x + round(
-        current_cell_width * end_progress
-    )
+    static_end_x = margin_x + int(navigation_width * start_progress)
+    dynamic_end_x = margin_x + round(navigation_width * end_progress)
 
-    if static_end_x > current_cell_x:
+    if static_end_x > margin_x:
         filters.append(
-            f"drawbox=x={current_cell_x}:y=42:"
-            f"w={static_end_x - current_cell_x}:h=8:"
-            "color=0xF97316:t=fill"
+            f"drawbox=x={margin_x}:y={panel_y}:"
+            f"w={static_end_x - margin_x}:h={panel_height}:"
+            "color=0x747672@0.96:t=fill"
         )
 
     for pixel_x in range(static_end_x, dynamic_end_x):
         pixel_progress = (
-            (pixel_x + 0.5 - current_cell_x)
-            / max(current_cell_width, 1)
+            (pixel_x + 0.5 - margin_x)
+            / navigation_width
         )
         activation_time = max(
             0.0,
-            pixel_progress * safe_chapter_duration - chapter_elapsed,
+            pixel_progress * safe_video_duration - video_elapsed,
         )
         filters.append(
-            f"drawbox=x={pixel_x}:y=42:w=1:h=8:"
-            "color=0xF97316:t=fill:"
+            f"drawbox=x={pixel_x}:y={panel_y}:w=1:h={panel_height}:"
+            "color=0x747672@0.96:t=fill:"
             f"enable='gte(t,{activation_time:.3f})'"
         )
 
-    # Small separators make the chapter boundaries readable without turning
-    # the bar back into a row of independent tabs.
+    # Short dividers preserve the single-strip appearance from the reference.
     for boundary_index in range(1, len(chapters)):
         boundary_x = margin_x + round(boundary_index * cell_width)
         filters.append(
-            f"drawbox=x={boundary_x}:y=39:w=2:h=14:"
-            "color=white@0.95:t=fill"
+            f"drawbox=x={boundary_x}:y=20:w=2:h=48:"
+            "color=0xA3A5A1@0.72:t=fill"
         )
 
     for chapter in chapters:
@@ -528,11 +505,11 @@ def build_chapter_navigation_filters(
         actual_cell_width = next_cell_x - cell_x
 
         if chapter_index < current_chapter_index:
-            text_color = "0x475569"
+            text_color = "0xD1D5DB"
         elif chapter_index == current_chapter_index:
-            text_color = "0xC2410C"
+            text_color = "white"
         else:
-            text_color = "0x94A3B8"
+            text_color = "0xD1D5DB"
 
         filters.append(
             (
@@ -542,7 +519,7 @@ def build_chapter_navigation_filters(
                 f"fontcolor={text_color}:"
                 f"fontsize={font_size}:"
                 f"x={cell_x + actual_cell_width / 2}-text_w/2:"
-                "y=72"
+                f"y={panel_y + panel_height / 2}-text_h/2"
             )
         )
 
@@ -556,9 +533,9 @@ def build_segment_video(
     output_path: Path,
     chapters: list[dict],
     current_chapter_index: int,
-    chapter_elapsed: float,
+    video_elapsed: float,
     segment_duration: float,
-    chapter_duration: float,
+    video_duration: float,
     width: int = 1080,
     height: int = 1920,
     fps: int = 30,
@@ -596,9 +573,9 @@ def build_segment_video(
     filters.extend(build_chapter_navigation_filters(
         chapters=chapters,
         current_chapter_index=current_chapter_index,
-        chapter_elapsed=chapter_elapsed,
+        video_elapsed=video_elapsed,
         segment_duration=segment_duration,
-        chapter_duration=chapter_duration,
+        video_duration=video_duration,
         width=width,
     ))
     vf = ",".join(filters)
@@ -662,10 +639,6 @@ def build_all_segment_videos(
         )
     )
     enrich_manifest_timeline(manifest)
-    chapters_by_index = {
-        int(chapter["index"]): chapter
-        for chapter in manifest["chapters"]
-    }
 
     video_files = []
 
@@ -720,11 +693,9 @@ def build_all_segment_videos(
             output_path=video_path,
             chapters=manifest["chapters"],
             current_chapter_index=segment["chapter_index"],
-            chapter_elapsed=float(segment["chapter_elapsed"]),
+            video_elapsed=float(segment["start_time"]),
             segment_duration=float(segment["duration"]),
-            chapter_duration=float(
-                chapters_by_index[int(segment["chapter_index"])]["duration"]
-            ),
+            video_duration=float(manifest["duration"]),
         )
 
         video_files.append(
