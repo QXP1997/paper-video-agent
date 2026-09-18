@@ -1,6 +1,9 @@
 import asyncio
+import copy
 import json
+import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import edge_tts
@@ -103,6 +106,7 @@ async def generate_tts(
 async def generate_script_audio(
     _script: PaperScript,
     output_dir: str | Path,
+    tts_concurrency: int = 4,
 ):
     output_dir = Path(output_dir)
 
@@ -159,12 +163,12 @@ async def generate_script_audio(
         })
         chapter_segment_cursor += chapter_segment_count
 
+    segment_specs = []
     for chapter_index, chapter in enumerate(
         _script.chapters,
         start=1,
     ):
         chapter_segment_count = len(chapter.segments)
-
         for chapter_segment_index, segment in enumerate(
             chapter.segments,
             start=1,
@@ -172,67 +176,87 @@ async def generate_script_audio(
             segment_index += 1
             audio_name = f"segment_{segment_index:03d}.mp3"
             audio_path = output_dir / audio_name
-
             reusable = reusable_segments.get(segment_index)
-            can_reuse = (
-                reusable is not None
-                and reusable.get("text") == segment.text
-                and int(reusable.get("page", -1)) == segment.page
-                and reusable.get("words")
-                and audio_path.exists()
-                and audio_path.stat().st_size > 0
+            segment_specs.append({
+                "index": segment_index,
+                "chapter": chapter,
+                "chapter_index": chapter_index,
+                "chapter_segment_index": chapter_segment_index,
+                "chapter_segment_count": chapter_segment_count,
+                "segment": segment,
+                "audio_name": audio_name,
+                "audio_path": audio_path,
+                "reusable": reusable,
+            })
+
+    semaphore = asyncio.Semaphore(max(1, int(tts_concurrency)))
+
+    async def generate_one(spec: dict) -> dict:
+        index = spec["index"]
+        chapter = spec["chapter"]
+        segment = spec["segment"]
+        audio_path = spec["audio_path"]
+        reusable = spec["reusable"]
+        can_reuse = (
+            reusable is not None
+            and reusable.get("text") == segment.text
+            and int(reusable.get("page", -1)) == segment.page
+            and reusable.get("words")
+            and audio_path.exists()
+            and audio_path.stat().st_size > 0
+        )
+
+        if can_reuse:
+            print(
+                f"复用 TTS: {index}/{total_segments} "
+                f"[{chapter.title} "
+                f"{spec['chapter_segment_index']}/"
+                f"{spec['chapter_segment_count']}]"
+            )
+            return reusable
+
+        async with semaphore:
+            print(
+                f"生成 TTS: {index}/{total_segments} "
+                f"[{chapter.title} "
+                f"{spec['chapter_segment_index']}/"
+                f"{spec['chapter_segment_count']}]"
+            )
+            words = await generate_tts(
+                text=segment.text,
+                output_mp3=audio_path,
             )
 
-            if can_reuse:
-                print(
-                    f"复用 TTS: {segment_index}/{total_segments} "
-                    f"[{chapter.title} "
-                    f"{chapter_segment_index}/{chapter_segment_count}]"
-                )
-                segment_manifest = reusable
-            else:
-                print(
-                    f"生成 TTS: {segment_index}/{total_segments} "
-                    f"[{chapter.title} "
-                    f"{chapter_segment_index}/{chapter_segment_count}]"
-                )
-                words = await generate_tts(
-                    text=segment.text,
-                    output_mp3=audio_path,
-                )
+        return {
+            "index": index,
+            "chapter_id": chapter.chapter_id,
+            "chapter_index": spec["chapter_index"],
+            "chapter_count": chapter_count,
+            "chapter_title": chapter.title,
+            "chapter_segment_index": spec["chapter_segment_index"],
+            "chapter_segment_count": spec["chapter_segment_count"],
+            "page": segment.page,
+            "text": segment.text,
+            "audio_file": spec["audio_name"],
+            "words": words,
+        }
 
-                segment_manifest = {
-                    "index": segment_index,
-                    "chapter_id": chapter.chapter_id,
-                    "chapter_index": chapter_index,
-                    "chapter_count": chapter_count,
-                    "chapter_title": chapter.title,
-                    "chapter_segment_index": chapter_segment_index,
-                    "chapter_segment_count": chapter_segment_count,
-
-                    # 视频需要展示的论文页
-                    "page": segment.page,
-
-                    # 原始解说内容
-                    "text": segment.text,
-
-                    # 用相对路径，方便以后移动整个目录
-                    "audio_file": audio_name,
-
-                    # edge-tts 给出的语音级时间
-                    "words": words,
-                }
-
-            manifest["segments"].append(segment_manifest)
-            enrich_manifest_timeline(manifest)
-            manifest_path.write_text(
-                json.dumps(
-                    manifest,
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
+    batch_size = max(1, int(tts_concurrency))
+    for batch_start in range(0, len(segment_specs), batch_size):
+        batch = segment_specs[batch_start:batch_start + batch_size]
+        batch_results = await asyncio.gather(
+            *(generate_one(spec) for spec in batch)
+        )
+        manifest["segments"].extend(batch_results)
+        enrich_manifest_timeline(manifest)
+        manifest_path.write_text(
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     return manifest
 
@@ -305,8 +329,49 @@ def format_srt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+def _words_with_spaced_punctuation(
+    words: list[dict],
+    source_text: str | None,
+) -> list[dict]:
+    """Replace source punctuation with visual spaces in subtitle words."""
+    if not source_text:
+        return words
+
+    punctuation = set(PUNCTUATIONS + "、，。！？；：‘’“”《》（）【】—…·-–—/")
+    source_cursor = 0
+    spaced_words = []
+
+    for word in words:
+        token = str(word.get("text", ""))
+        if not token:
+            continue
+
+        found_at = source_text.find(token, source_cursor)
+        if found_at < 0:
+            # TTS occasionally normalizes a token (for example a dash or a
+            # version suffix). Keep the timing, but do not invent a gap.
+            gap = ""
+        else:
+            gap = source_text[source_cursor:found_at]
+            source_cursor = found_at + len(token)
+
+        needs_space = any(
+            char in punctuation or char.isspace()
+            for char in gap
+        )
+        spaced_word = copy.copy(word)
+        spaced_word["text"] = (
+            (" " if needs_space else "")
+            + token
+        )
+        spaced_words.append(spaced_word)
+
+    return spaced_words
+
+
 def build_subtitles(
     words: list[dict],
+    source_text: str | None = None,
     max_chars: int = 18,
     min_chars: int = 8,
 ) -> list[dict]:
@@ -319,6 +384,7 @@ def build_subtitles(
     3. 时间直接使用真实 WordBoundary
     """
 
+    words = _words_with_spaced_punctuation(words, source_text)
     subtitles = []
 
     current_words = []
@@ -331,7 +397,7 @@ def build_subtitles(
             return
 
         subtitles.append({
-            "text": current_text,
+            "text": current_text.strip(),
             "start": current_words[0]["start"],
             "end": current_words[-1]["end"],
         })
@@ -352,6 +418,12 @@ def build_subtitles(
             and text[0].isascii()
             and text[0].isalnum()
         )
+        decimal_identifier_continues = (
+            bool(current_text)
+            and current_text.endswith(".")
+            and current_text[-2:-1].isdigit()
+            and text[0].isdigit()
+        )
 
         # 加上当前 word 会超长，先把上一条字幕提交。英文数字组成的
         # 连续标识符允许略微超长，避免把 pass3、GPT5 等拆成两条。
@@ -359,6 +431,7 @@ def build_subtitles(
             current_words
             and len(current_text) + len(text) > max_chars
             and not joins_identifier
+            and not decimal_identifier_continues
         ):
             flush()
 
@@ -370,9 +443,10 @@ def build_subtitles(
             if word_index + 1 < len(words)
             else ""
         )
+        normalized_text = text.lstrip()
         decimal_continues = (
-            text.endswith(".")
-            and text[:-1].isdigit()
+            normalized_text.endswith(".")
+            and normalized_text[:-1].isdigit()
             and next_text[:1].isdigit()
         )
 
@@ -404,6 +478,7 @@ def write_segment_srt(
 
     subtitles = build_subtitles(
         words=segment["words"],
+        source_text=segment.get("text"),
         max_chars=max_chars,
     )
 
@@ -692,6 +767,7 @@ def build_all_segment_videos(
     image_dir: str | Path,
     subtitle_dir: str | Path,
     output_dir: str | Path,
+    video_concurrency: int = 2,
 ) -> list[Path]:
 
     manifest_path = Path(manifest_path)
@@ -712,9 +788,7 @@ def build_all_segment_videos(
     )
     enrich_manifest_timeline(manifest)
 
-    video_files = []
-
-    for segment in manifest["segments"]:
+    def build_one(segment: dict) -> Path:
         index = segment["index"]
         page = segment["page"]
 
@@ -770,11 +844,13 @@ def build_all_segment_videos(
             video_duration=float(manifest["duration"]),
         )
 
-        video_files.append(
-            video_path
-        )
+        return video_path
 
-    return video_files
+    with ThreadPoolExecutor(
+        max_workers=max(1, int(video_concurrency))
+    ) as executor:
+        # map preserves manifest order while FFmpeg jobs run concurrently.
+        return list(executor.map(build_one, manifest["segments"]))
 #########################合成segment中srt字幕##########################
 
 # 合成视频
@@ -903,10 +979,15 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
         save_paper_script(script, script_path)
 
     # 保存segment视频片段
+    tts_concurrency = max(
+        1,
+        int(os.getenv("PAPER_VIDEO_TTS_CONCURRENCY", "4")),
+    )
     asyncio.run(
         generate_script_audio(
             script,
             fr"{paper_dir}\audio",
+            tts_concurrency=tts_concurrency,
         )
     )
 
@@ -924,6 +1005,10 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
         image_dir=fr"{paper_dir}\images",
         subtitle_dir=fr"{paper_dir}\subtitles",
         output_dir=fr"{paper_dir}\output\segments",
+        video_concurrency=max(
+            1,
+            int(os.getenv("PAPER_VIDEO_VIDEO_CONCURRENCY", "3")),
+        ),
     )
 
     # 合成高质量视频
