@@ -964,6 +964,7 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
         pdf_path=pdf_path,
         output_dir=fr"{paper_dir}\images",
         zoom=2.0,
+        metadata_dir=fr"{paper_dir}\metadata",
     )
 
     script_path = Path(paper_dir) / "output" / "paper_script.json"
