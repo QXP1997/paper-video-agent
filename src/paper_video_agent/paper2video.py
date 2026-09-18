@@ -195,15 +195,15 @@ async def generate_script_audio(
         index = spec["index"]
         chapter = spec["chapter"]
         segment = spec["segment"]
-        audio_path = spec["audio_path"]
-        reusable = spec["reusable"]
+        _audio_path = spec["audio_path"]
+        _reusable = spec["reusable"]
         can_reuse = (
-            reusable is not None
-            and reusable.get("text") == segment.text
-            and int(reusable.get("page", -1)) == segment.page
-            and reusable.get("words")
-            and audio_path.exists()
-            and audio_path.stat().st_size > 0
+            _reusable is not None
+            and _reusable.get("text") == segment.text
+            and int(_reusable.get("page", -1)) == segment.page
+            and _reusable.get("words")
+            and _audio_path.exists()
+            and _audio_path.stat().st_size > 0
         )
 
         if can_reuse:
@@ -213,7 +213,7 @@ async def generate_script_audio(
                 f"{spec['chapter_segment_index']}/"
                 f"{spec['chapter_segment_count']}]"
             )
-            return reusable
+            return _reusable
 
         async with semaphore:
             print(
@@ -224,7 +224,7 @@ async def generate_script_audio(
             )
             words = await generate_tts(
                 text=segment.text,
-                output_mp3=audio_path,
+                output_mp3=_audio_path,
             )
 
         return {
