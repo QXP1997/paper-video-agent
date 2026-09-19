@@ -7,11 +7,10 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import edge_tts
-
 from paper_video_agent.chat import generate_paper_script
 from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
+from paper_video_agent.tts import generate_tts, get_tts_config
 from paper_video_agent.visual import generate_visual_plan, align_visual_plan
 
 
@@ -37,73 +36,6 @@ def save_paper_script(
             indent=2,
         )
 
-# tts 生成
-async def generate_tts(
-    text: str,
-    output_mp3: Path,
-    voice: str = "zh-CN-XiaoxiaoNeural",
-    rate: str = "+0%",
-    max_attempts: int = 5,
-) -> list[dict]:
-
-    output_mp3.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    temporary_path = output_mp3.with_suffix(
-        output_mp3.suffix + ".part"
-    )
-
-    for attempt in range(1, max_attempts + 1):
-        words = []
-        temporary_path.unlink(missing_ok=True)
-
-        try:
-            communicate = edge_tts.Communicate(
-                text=text,
-                voice=voice,
-                rate=rate,
-                boundary="WordBoundary",
-            )
-
-            with temporary_path.open("wb") as audio_file:
-                async for chunk in communicate.stream():
-                    # 写入音频
-                    if chunk["type"] == "audio":
-                        audio_file.write(chunk["data"])
-
-                    # 保存词级时间戳
-                    elif chunk["type"] == "WordBoundary":
-                        start = chunk["offset"] / 10_000_000
-                        duration = chunk["duration"] / 10_000_000
-                        words.append({
-                            "text": chunk["text"],
-                            "start": round(start, 3),
-                            "end": round(start + duration, 3),
-                        })
-
-            if temporary_path.stat().st_size <= 0 or not words:
-                raise RuntimeError("TTS 返回了空音频或空时间戳")
-
-            temporary_path.replace(output_mp3)
-            return words
-        except Exception:
-            temporary_path.unlink(missing_ok=True)
-
-            if attempt >= max_attempts:
-                raise
-
-            delay = min(2 ** attempt, 15)
-            print(
-                f"TTS 网络调用失败，{delay} 秒后重试 "
-                f"{attempt + 1}/{max_attempts}..."
-            )
-            await asyncio.sleep(delay)
-
-    raise RuntimeError("TTS 生成失败")
-
-
 # 生成视频segment.mp3以及audio_manifest.json
 async def generate_script_audio(
     _script: PaperScript,
@@ -128,6 +60,25 @@ async def generate_script_audio(
         except (OSError, json.JSONDecodeError):
             existing_manifest = None
 
+    tts_config = get_tts_config()
+    existing_tts_config = (existing_manifest or {}).get("tts")
+    # Manifests created before the backend metadata was added are known to
+    # have used the original Edge defaults. Do not reuse them after switching
+    # to another provider or voice.
+    legacy_edge_config = {
+        "backend": "edge",
+        "voice": "zh-CN-XiaoxiaoNeural",
+        "rate": "+0%",
+        "pitch": "+0Hz",
+    }
+    can_reuse_tts = (
+        existing_tts_config == tts_config
+        or (
+            existing_tts_config is None
+            and tts_config == legacy_edge_config
+        )
+    )
+
     reusable_segments = {
         int(segment["index"]): segment
         for segment in (existing_manifest or {}).get("segments", [])
@@ -135,6 +86,7 @@ async def generate_script_audio(
 
     manifest = {
         "title": _script.title,
+        "tts": tts_config,
         "chapters": [],
         "segments": [],
     }
@@ -200,7 +152,8 @@ async def generate_script_audio(
         _audio_path = spec["audio_path"]
         _reusable = spec["reusable"]
         can_reuse = (
-            _reusable is not None
+            can_reuse_tts
+            and _reusable is not None
             and _reusable.get("text") == segment.text
             and int(_reusable.get("page", -1)) == segment.page
             and _reusable.get("words")
@@ -227,6 +180,10 @@ async def generate_script_audio(
             words = await generate_tts(
                 text=segment.text,
                 output_mp3=_audio_path,
+                backend=tts_config["backend"],
+                voice=tts_config["voice"],
+                rate=tts_config["rate"],
+                pitch=tts_config["pitch"],
             )
 
         return {
@@ -239,6 +196,7 @@ async def generate_script_audio(
             "chapter_segment_count": spec["chapter_segment_count"],
             "page": segment.page,
             "text": segment.text,
+            "tts": tts_config,
             "audio_file": spec["audio_name"],
             "words": words,
         }
@@ -1234,4 +1192,3 @@ if __name__ == "__main__":
     parser.add_argument("--preview-segments", type=int, nargs="+", help="只合成指定 segment 的聚焦预览")
     arguments = parser.parse_args()
     build_video(arguments.paper_dir, arguments.pdf, arguments.preview_segments)
- 
