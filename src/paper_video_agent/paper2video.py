@@ -1186,9 +1186,11 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path, preview_segments: l
 if __name__ == "__main__":
     import argparse
 
+    pdf = r"D:\push_agent\paper\2609.20804v1\2609.20804v1.pdf"
+    paper_dir = r"D:\push_agent\paper\2609.20804v1"
     parser = argparse.ArgumentParser(description="论文讲解视频：独立图表镜头与词级时间对齐")
-    parser.add_argument("--paper-dir", default=r"D:\push_agent\paper\task6")
-    parser.add_argument("--pdf", default=r"D:\push_agent\paper\2609.11977v1.pdf")
+    parser.add_argument("--paper-dir", default=paper_dir)
+    parser.add_argument("--pdf", default=pdf)
     parser.add_argument("--preview-segments", type=int, nargs="+", help="只合成指定 segment 的聚焦预览")
     arguments = parser.parse_args()
     build_video(arguments.paper_dir, arguments.pdf, arguments.preview_segments)
