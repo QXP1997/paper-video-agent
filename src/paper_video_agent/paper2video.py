@@ -376,18 +376,24 @@ def build_subtitles(
     source_text: str | None = None,
     max_chars: int = 18,
     min_chars: int = 8,
+    max_lines: int = 2,
+    short_tail_chars: int = 4,
 ) -> list[dict]:
     """
     根据 WordBoundary 生成字幕段。
 
     规则：
-    1. 每条字幕尽量不超过 max_chars
+    1. 每行尽量不超过 max_chars，单条字幕最多 max_lines 行
     2. 达到 min_chars 后，遇到标点优先切
-    3. 时间直接使用真实 WordBoundary
+    3. 由于时间直接使用真实 WordBoundary，短尾词（例如单独的“它”）
+       会尽量并入下一条字幕，避免上一条字幕只剩一个语义上属于下一句的词
     """
 
     words = _words_with_spaced_punctuation(words, source_text)
     subtitles = []
+    max_lines = max(1, int(max_lines))
+    max_chars = max(1, int(max_chars))
+    max_total_chars = max_chars * max_lines
 
     current_words = []
     current_text = ""
@@ -402,6 +408,7 @@ def build_subtitles(
             "text": current_text.strip(),
             "start": current_words[0]["start"],
             "end": current_words[-1]["end"],
+            "_words": current_words.copy(),
         })
 
         current_words = []
@@ -431,7 +438,7 @@ def build_subtitles(
         # 连续标识符允许略微超长，避免把 pass3、GPT5 等拆成两条。
         if (
             current_words
-            and len(current_text) + len(text) > max_chars
+            and len(current_text) + len(text) > max_total_chars
             and not joins_identifier
             and not decimal_identifier_continues
         ):
@@ -463,7 +470,101 @@ def build_subtitles(
 
     flush()
 
-    return subtitles
+    # A chunk created by the character limit can end with a very short word
+    # that actually starts the next spoken phrase (for example ``...运行的 它``).
+    # Move that tail to the following chunk when there is room. This keeps the
+    # word-level timing intact while making the visual subtitle read naturally.
+    sentence_punctuation = set(PUNCTUATIONS + "、，。！？；：‘’“”《》（）【】—…·-–—/")
+
+    def raw_text(items: list[dict]) -> str:
+        return "".join(str(item.get("text", "")) for item in items)
+
+    def refresh(item: dict):
+        item["text"] = raw_text(item["_words"]).strip()
+        item["start"] = item["_words"][0]["start"]
+        item["end"] = item["_words"][-1]["end"]
+
+    for index in range(len(subtitles) - 1):
+        current = subtitles[index]
+        following = subtitles[index + 1]
+        current_words = current["_words"]
+        following_words = following["_words"]
+
+        if len(current_words) < 2 or not following_words:
+            continue
+
+        # Usually one Edge-TTS word is enough. If it was split into two very
+        # short tokens, move the smallest trailing run (up to four visible
+        # characters) as one unit.
+        tail_words = []
+        tail_length = 0
+        cursor = len(current_words) - 1
+        while cursor >= 1:
+            token = str(current_words[cursor].get("text", "")).strip()
+            if (
+                not token
+                or all(char in sentence_punctuation for char in token)
+                or token[-1] in sentence_punctuation
+            ):
+                break
+            if (
+                len(token) > short_tail_chars
+                or tail_length + len(token) > short_tail_chars
+            ):
+                break
+            tail_words.insert(0, current_words[cursor])
+            tail_length += len(token)
+            cursor -= 1
+
+        if not tail_words:
+            continue
+
+        prefix_words = current_words[:cursor + 1]
+        prefix_text = raw_text(prefix_words).strip()
+        following_text = raw_text(following_words).strip()
+        if len(prefix_text) < min_chars or len(following_text) + tail_length > max_total_chars:
+            continue
+
+        # Avoid carrying punctuation-introduced leading whitespace into the
+        # first word of the next subtitle.
+        moved_words = []
+        for word in tail_words:
+            moved = copy.copy(word)
+            moved["text"] = str(moved.get("text", "")).lstrip()
+            moved_words.append(moved)
+
+        current["_words"] = prefix_words
+        following["_words"] = moved_words + following_words
+        refresh(current)
+        refresh(following)
+
+    def wrap_text(text: str) -> str:
+        """Wrap a subtitle into at most two balanced, readable lines."""
+        text = " ".join(text.strip().split())
+        if len(text) <= max_chars or max_lines == 1:
+            return text
+
+        # Prefer breaking at a visual space, but fall back to a character
+        # boundary for Chinese text where spaces are not normally present.
+        split_at = text.rfind(" ", 0, max_chars + 1)
+        if (
+            split_at < max(1, max_chars // 2)
+            or len(text) - split_at > max_chars
+        ):
+            split_at = max_chars
+        first = text[:split_at].rstrip()
+        second = text[split_at:].strip()
+        return f"{first}\n{second}"
+
+    result = []
+    for subtitle in subtitles:
+        refresh(subtitle)
+        result.append({
+            "text": wrap_text(subtitle["text"]),
+            "start": subtitle["start"],
+            "end": subtitle["end"],
+        })
+    return result
 
 
 def write_segment_srt(
@@ -1128,8 +1229,9 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="论文讲解视频：独立图表镜头与词级时间对齐")
-    parser.add_argument("--paper-dir", default=r"D:\push_agent\paper\task5")
+    parser.add_argument("--paper-dir", default=r"D:\push_agent\paper\task6")
     parser.add_argument("--pdf", default=r"D:\push_agent\paper\2609.11977v1.pdf")
     parser.add_argument("--preview-segments", type=int, nargs="+", help="只合成指定 segment 的聚焦预览")
     arguments = parser.parse_args()
     build_video(arguments.paper_dir, arguments.pdf, arguments.preview_segments)
+ 
