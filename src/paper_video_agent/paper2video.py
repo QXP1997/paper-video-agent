@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import math
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +12,7 @@ import edge_tts
 from paper_video_agent.chat import generate_paper_script
 from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
+from paper_video_agent.visual import generate_visual_plan, align_visual_plan
 
 
 def save_paper_script(
@@ -686,6 +688,7 @@ def build_segment_video(
     width: int = 1080,
     height: int = 1920,
     fps: int = 30,
+    focus_cues: list[dict] | None = None,
 ):
     output_path.parent.mkdir(
         parents=True,
@@ -699,7 +702,7 @@ def build_segment_video(
     filters = [
         (
             f"scale={width}:{height}:"
-            "force_original_aspect_ratio=decrease"
+            "force_original_aspect_ratio=decrease,setsar=1"
         ),
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:white",
         (
@@ -730,16 +733,50 @@ def build_segment_video(
     cmd = [
         "ffmpeg",
         "-y",
+        "-hide_banner", "-loglevel", "warning",
 
         # 静态 PDF 页面
         "-loop", "1",
+        "-framerate", str(fps),
         "-i", str(image_path.resolve()),
 
         # TTS
         "-i", str(audio_path.resolve()),
-
-        "-vf", vf,
-
+    ]
+    if focus_cues:
+        # Each screenshot becomes a complete white-backed frame. This replaces
+        # the PDF during its interval without cropping or stretching the asset.
+        graph = [f"[0:v]{','.join(filters[:2])},setsar=1[page]"]
+        previous = "page"
+        for index, cue in enumerate(focus_cues):
+            screenshot = Path(cue["image_path"])
+            if not screenshot.is_file():
+                raise FileNotFoundError(f"聚焦素材不存在: {screenshot}")
+            start, end = float(cue["start"]), float(cue["end"])
+            if not 0 <= start < end <= segment_duration + 0.001:
+                raise ValueError(f"聚焦时间范围无效: {start}, {end}")
+            cmd.extend(["-loop", "1", "-framerate", str(fps), "-i", str(screenshot.resolve())])
+            # Reserve the top 88 px for navigation and bottom 280 for subtitles.
+            content_height = height - 88 - 280
+            graph.append(
+                f"[{index + 2}:v]scale={width - 64}:{content_height}:"
+                "force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:88+({content_height}-ih)/2:white,"
+                f"setsar=1[asset{index}]"
+            )
+            label = f"view{index}"
+            graph.append(
+                f"[{previous}][asset{index}]overlay=0:0:"
+                f"enable='gte(t,{start:.3f})*lt(t,{end:.3f})'[{label}]"
+            )
+            previous = label
+        # Subtitles and navigation are rendered once, after all image switches.
+        graph.append(f"[{previous}]{','.join(filters[2:])}[video]")
+        cmd.extend(["-filter_complex_threads", "1", "-filter_complex", ";".join(graph),
+                    "-map", "[video]", "-map", "1:a:0"])
+    else:
+        cmd.extend(["-vf", vf, "-map", "0:v:0", "-map", "1:a:0"])
+    cmd.extend([
         "-r", str(fps),
 
         "-c:v", "libx264",
@@ -749,17 +786,40 @@ def build_segment_video(
 
         "-c:a", "aac",
         "-b:a", "192k",
+        "-af", "apad",
 
         # 音频结束，当前 segment 就结束
         "-shortest",
+        "-t", f"{segment_duration:.6f}",
 
         str(output_path.resolve()),
-    ]
+    ])
 
     run_cmd(
         cmd,
         cwd=subtitle_path.parent,
     )
+
+def load_audio_timeline(manifest_path: str | Path, audio_dir: str | Path) -> dict:
+    """Use real MP3 durations so segment switches/progress share one clock."""
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    def duration(segment):
+        path = Path(audio_dir) / f"segment_{int(segment['index']):03d}.mp3"
+        value = subprocess.check_output([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        ], text=True)
+        seconds = float(value.strip())
+        if not 0 < seconds < 86400:
+            raise ValueError(f"无效的音频时长: {path}")
+        # Round up to a complete frame for concat and progress consistency.
+        return math.ceil(seconds * 30) / 30
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        durations = list(executor.map(duration, manifest["segments"]))
+    for segment, seconds in zip(manifest["segments"], durations):
+        segment["duration"] = seconds
+    return enrich_manifest_timeline(manifest)
+
 
 def build_all_segment_videos(
     manifest_path: str | Path,
@@ -768,6 +828,8 @@ def build_all_segment_videos(
     subtitle_dir: str | Path,
     output_dir: str | Path,
     video_concurrency: int = 2,
+    visual_timeline: dict | None = None,
+    segment_indices: list[int] | None = None,
 ) -> list[Path]:
 
     manifest_path = Path(manifest_path)
@@ -781,12 +843,11 @@ def build_all_segment_videos(
         exist_ok=True,
     )
 
-    manifest = json.loads(
-        manifest_path.read_text(
-            encoding="utf-8"
-        )
-    )
-    enrich_manifest_timeline(manifest)
+    manifest = load_audio_timeline(manifest_path, audio_dir)
+    visual_by_index = {
+        item["segment_index"]: item["cues"]
+        for item in (visual_timeline or {}).get("segments", [])
+    }
 
     def build_one(segment: dict) -> Path:
         index = segment["index"]
@@ -842,6 +903,7 @@ def build_all_segment_videos(
             video_elapsed=float(segment["start_time"]),
             segment_duration=float(segment["duration"]),
             video_duration=float(manifest["duration"]),
+            focus_cues=visual_by_index.get(index, []),
         )
 
         return video_path
@@ -850,7 +912,14 @@ def build_all_segment_videos(
         max_workers=max(1, int(video_concurrency))
     ) as executor:
         # map preserves manifest order while FFmpeg jobs run concurrently.
-        return list(executor.map(build_one, manifest["segments"]))
+        selected = manifest["segments"]
+        if segment_indices is not None:
+            requested = set(segment_indices)
+            available = {s["index"] for s in selected}
+            if not requested or requested - available:
+                raise ValueError(f"无效的预览 segment 编号: {segment_indices}")
+            selected = [s for s in selected if s["index"] in requested]
+        return list(executor.map(build_one, selected))
 #########################合成segment中srt字幕##########################
 
 # 合成视频
@@ -867,12 +936,22 @@ def concat_segment_videos(
 
     concat_file = (
         output_path.parent
-        / "concat.txt"
+        / f"{output_path.stem}_concat.txt"
     )
 
     lines = []
 
-    for video_path in video_files:
+    def video_duration(path):
+        return float(subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ], text=True).strip())
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        durations = list(executor.map(video_duration, video_files))
+
+    for video_path, duration in zip(video_files, durations):
         path = (
             str(video_path.resolve())
             .replace("\\", "/")
@@ -882,6 +961,8 @@ def concat_segment_videos(
         lines.append(
             f"file '{path}'"
         )
+        # AAC padding must not accumulate between clips and shift the timeline.
+        lines.append(f"duration {duration:.6f}")
 
     concat_file.write_text(
         "\n".join(lines),
@@ -897,9 +978,10 @@ def concat_segment_videos(
 
         "-i", str(concat_file),
 
-        # 前面所有 segment 参数一致，
-        # 所以直接 copy 即可
-        "-c", "copy",
+        # Keep video frames intact; normalize AAC timestamps across clip joins.
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "96k",
+        "-af", "aresample=async=1:first_pts=0",
 
         "-movflags", "+faststart",
 
@@ -958,7 +1040,7 @@ def compress_video_for_social(
     run_cmd(cmd)
 
 
-def build_video(paper_dir: str | Path, pdf_path: str | Path):
+def build_video(paper_dir: str | Path, pdf_path: str | Path, preview_segments: list[int] | None = None):
     # pdf转文本和图片
     pages, page_images = parse_pdf(
         pdf_path=pdf_path,
@@ -979,6 +1061,11 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
         script = generate_paper_script(pages["pages"])
         save_paper_script(script, script_path)
 
+    visual_plan = generate_visual_plan(
+        script, Path(paper_dir) / "metadata",
+        Path(paper_dir) / "output" / "visual_plan.json", pages["pages"],
+    )
+
     # 保存segment视频片段
     tts_concurrency = max(
         1,
@@ -990,6 +1077,13 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
             fr"{paper_dir}\audio",
             tts_concurrency=tts_concurrency,
         )
+    )
+
+    visual_timeline = align_visual_plan(
+        visual_plan,
+        load_audio_timeline(Path(paper_dir) / "audio" / "audio_manifest.json", Path(paper_dir) / "audio"),
+        Path(paper_dir) / "metadata",
+        Path(paper_dir) / "output" / "visual_timeline.json",
     )
 
     # 生成srt字幕
@@ -1005,7 +1099,9 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
         audio_dir=fr"{paper_dir}\audio",
         image_dir=fr"{paper_dir}\images",
         subtitle_dir=fr"{paper_dir}\subtitles",
-        output_dir=fr"{paper_dir}\output\segments",
+        output_dir=Path(paper_dir) / "output" / ("focus_preview_segments" if preview_segments else "segments"),
+        visual_timeline=visual_timeline,
+        segment_indices=preview_segments,
         video_concurrency=max(
             1,
             int(os.getenv("PAPER_VIDEO_VIDEO_CONCURRENCY", "3")),
@@ -1013,11 +1109,14 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
     )
 
     # 合成高质量视频
-    final_path = Path(paper_dir) / "output" / "final.mp4"
+    final_path = Path(paper_dir) / "output" / ("focus_preview.mp4" if preview_segments else "final.mp4")
     concat_segment_videos(
         video_files=video_files,
         output_path=final_path,
     )
+    if preview_segments:
+        print(f"图表聚焦预览已生成: {final_path}")
+        return
 
     # 另外生成一个体积更小、兼容性较好的社交平台发布版
     compress_video_for_social(
@@ -1026,6 +1125,11 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path):
     )
 
 if __name__ == "__main__":
-    PAPER_DIR = r"D:\push_agent\paper\task4"
-    PDF_PATH = r"D:\push_agent\paper\2609.11977v1.pdf"
-    build_video(PAPER_DIR, PDF_PATH)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="论文讲解视频：独立图表镜头与词级时间对齐")
+    parser.add_argument("--paper-dir", default=r"D:\push_agent\paper\task5")
+    parser.add_argument("--pdf", default=r"D:\push_agent\paper\2609.11977v1.pdf")
+    parser.add_argument("--preview-segments", type=int, nargs="+", help="只合成指定 segment 的聚焦预览")
+    arguments = parser.parse_args()
+    build_video(arguments.paper_dir, arguments.pdf, arguments.preview_segments)

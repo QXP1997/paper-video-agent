@@ -18,6 +18,22 @@ class ScriptSegment(BaseModel):
     )
 
 
+class FocusCue(BaseModel):
+    asset_id: str = Field(min_length=1, description="素材索引中已有的图片或表格 ID")
+    start_quote: str = Field(min_length=1, description="开始展示时对应的连续口播原文，须在当前 segment 中唯一")
+    end_quote: str = Field(description="展示到此连续口播原文说完；空字符串表示展示到当前 segment 结束")
+    reason: str = Field(min_length=1, description="该图表如何帮助理解这一段讲解")
+
+
+class SegmentVisualPlan(BaseModel):
+    segment_index: int = Field(ge=1, description="输入中全局 segment 编号")
+    cues: list[FocusCue] = Field(default_factory=list, max_length=3)
+
+
+class ChapterVisualPlan(BaseModel):
+    segments: list[SegmentVisualPlan] = Field(default_factory=list)
+
+
 class VideoChapterPlan(BaseModel):
     """A narrative chapter planned for the video, not a paper section."""
 

@@ -259,7 +259,7 @@ llm = ChatDeepSeek(
     base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
     api_key=os.getenv("DEEPSEEK_API_KEY"),
     temperature=0.3,
-    max_tokens=52768,
+    max_tokens=100000,
 
     extra_body={
         "thinking": {
