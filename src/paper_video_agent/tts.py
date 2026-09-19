@@ -4,8 +4,8 @@ Every backend returns the same list used by the subtitle renderer::
 
     [{"text": "词", "start": 0.0, "end": 0.35}, ...]
 
-The default backend remains Edge TTS. Azure Speech is optional and is only
-imported when selected through ``PAPER_VIDEO_TTS_BACKEND=azure``.
+The only active backend is Edge TTS. The provider-neutral result shape keeps
+the subtitle renderer independent from the speech implementation.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from typing import Protocol
 import edge_tts
 
 
-DEFAULT_TTS_BACKEND = "edge"
 DEFAULT_TTS_VOICE = "zh-CN-XiaoxiaoNeural"
 DEFAULT_TTS_RATE = "+0%"
 DEFAULT_TTS_PITCH = "+0Hz"
@@ -40,11 +39,12 @@ def get_tts_config(
     pitch: str | None = None,
 ) -> dict[str, str]:
     """Resolve the current TTS settings from arguments and environment."""
+    selected_backend = (backend or "edge").strip().lower()
+    if selected_backend not in {"edge", "edge_tts"}:
+        raise ValueError("当前只支持 Edge TTS")
+
     return {
-        "backend": (
-            backend
-            or os.getenv("PAPER_VIDEO_TTS_BACKEND", DEFAULT_TTS_BACKEND)
-        ).strip().lower(),
+        "backend": "edge",
         "voice": (
             voice
             or os.getenv("PAPER_VIDEO_TTS_VOICE", DEFAULT_TTS_VOICE)
@@ -101,97 +101,14 @@ class EdgeTTSBackend:
         return words
 
 
-class AzureTTSBackend:
-    """Optional Azure Speech backend with native word-boundary timestamps."""
-
-    def __init__(self, voice: str):
-        self.voice = voice
-
-    async def synthesize(
-        self,
-        text: str,
-        output_path: Path,
-    ) -> list[dict]:
-        return await asyncio.to_thread(
-            self._synthesize_sync,
-            text,
-            output_path,
-        )
-
-    def _synthesize_sync(
-        self,
-        text: str,
-        output_path: Path,
-    ) -> list[dict]:
-        try:
-            import azure.cognitiveservices.speech as speechsdk
-        except ImportError as exc:
-            raise RuntimeError(
-                "Azure TTS 需要先安装 azure-cognitiveservices-speech"
-            ) from exc
-
-        key = os.getenv("AZURE_SPEECH_KEY")
-        region = os.getenv("AZURE_SPEECH_REGION")
-        if not key or not region:
-            raise RuntimeError(
-                "Azure TTS 需要配置 AZURE_SPEECH_KEY 和 AZURE_SPEECH_REGION"
-            )
-
-        speech_config = speechsdk.SpeechConfig(
-            subscription=key,
-            region=region,
-        )
-        speech_config.speech_synthesis_voice_name = self.voice
-        speech_config.set_speech_synthesis_output_format(
-            speechsdk.SpeechSynthesisOutputFormat.Audio24Khz160KBitRateMonoMp3
-        )
-        audio_config = speechsdk.audio.AudioOutputConfig(
-            filename=str(output_path),
-        )
-        synthesizer = speechsdk.SpeechSynthesizer(
-            speech_config=speech_config,
-            audio_config=audio_config,
-        )
-
-        words = []
-
-        def on_word_boundary(event):
-            token = str(getattr(event, "text", "") or "")
-            if not token:
-                return
-            start = float(event.audio_offset) / 10_000_000
-            duration = float(event.duration) / 10_000_000
-            words.append({
-                "text": token,
-                "start": round(start, 3),
-                "end": round(start + duration, 3),
-            })
-
-        synthesizer.synthesis_word_boundary.connect(on_word_boundary)
-        result = synthesizer.speak_text_async(text).get()
-        if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-            details = getattr(result, "cancellation_details", None)
-            message = getattr(details, "error_details", "未知错误")
-            raise RuntimeError(f"Azure TTS 生成失败: {message}")
-
-        return words
-
-
 def create_tts_backend(config: dict[str, str] | None = None) -> TTSBackend:
     config = config or get_tts_config()
-    backend = config["backend"]
-
-    if backend in {"edge", "edge_tts"}:
-        return EdgeTTSBackend(
-            voice=config["voice"],
-            rate=config["rate"],
-            pitch=config["pitch"],
-        )
-    if backend in {"azure", "azure_speech"}:
-        return AzureTTSBackend(voice=config["voice"])
-
-    raise ValueError(
-        f"不支持的 TTS 后端: {backend}。可选值为 edge 或 azure"
+    if config.get("backend") != "edge":
+        raise ValueError("当前只支持 Edge TTS")
+    return EdgeTTSBackend(
+        voice=config["voice"],
+        rate=config["rate"],
+        pitch=config["pitch"],
     )
 
 
