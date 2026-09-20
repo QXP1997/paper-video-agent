@@ -1,13 +1,9 @@
 import json
 import re
+from pathlib import Path
 from typing import Any
 
-from pathlib import Path
-
 import pymupdf
-
-import fitz
-
 
 _CAPTION_RE = re.compile(
     r"^\s*(?P<kind>figure|fig\.?|table|图|表)"
@@ -483,7 +479,7 @@ def pdf2text(pdf_path: str | Path) -> dict[str, Any]:
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF 不存在: {pdf_path}")
 
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
 
     result = {
         "file_name": pdf_path.name,

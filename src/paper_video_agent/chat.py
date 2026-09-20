@@ -14,10 +14,13 @@ from paper_video_agent.models import (
 
 
 def _load_local_env() -> None:
-    """Load the repository's .env file without adding another dependency."""
-    env_path = Path(__file__).resolve().parents[2] / ".env"
-
-    if not env_path.is_file():
+    """Load .env from the working directory or a source checkout."""
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parents[2] / ".env",
+    ]
+    env_path = next((path for path in candidates if path.is_file()), None)
+    if env_path is None:
         return
 
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():

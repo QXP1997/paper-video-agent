@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -159,27 +160,31 @@ def generate_social_metadata(
 
 
 def main() -> None:
-    output_dir = r"D:\push_agent\paper\2609.20804v1\output"
-    script_json = r"D:\push_agent\paper\2609.20804v1\output\paper_script.json"
-
     parser = argparse.ArgumentParser(
         description="根据 paper_script.json 生成统一发布文案",
     )
     parser.add_argument(
         "--script-json",
-        default=script_json,
+        type=Path,
+        required=True,
         help="视频生成完成后的 paper_script.json 路径",
     )
     parser.add_argument(
         "--output-dir",
-        default=output_dir,
+        type=Path,
         help="输出目录，默认写回 paper_script.json 所在的 output 目录",
     )
     args = parser.parse_args()
 
+    script_path = args.script_json.expanduser().resolve()
+    if not script_path.is_file():
+        parser.error(f"脚本文件不存在: {script_path}")
+    if not os.getenv("DEEPSEEK_API_KEY", "").strip():
+        parser.error("未配置 DEEPSEEK_API_KEY，请复制 .env.example 为 .env 后填写")
+
     json_path, markdown_path = generate_social_metadata(
-        args.script_json,
-        args.output_dir,
+        script_path,
+        args.output_dir.expanduser().resolve() if args.output_dir else None,
     )
     print(f"发布文案 JSON 已生成: {json_path}")
     print(f"发布文案 Markdown 已生成: {markdown_path}")

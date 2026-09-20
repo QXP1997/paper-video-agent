@@ -1,17 +1,20 @@
+import argparse
 import asyncio
 import copy
 import json
 import math
 import os
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from paper_video_agent import __version__
 from paper_video_agent.chat import generate_paper_script
 from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
 from paper_video_agent.tts import generate_tts, get_tts_config
-from paper_video_agent.visual import generate_visual_plan, align_visual_plan
+from paper_video_agent.visual import align_visual_plan, generate_visual_plan
 
 
 def save_paper_script(
@@ -619,6 +622,26 @@ def escape_drawtext_text(text: str) -> str:
     )
 
 
+def get_video_font() -> tuple[Path | None, str]:
+    """Resolve a configurable CJK font for FFmpeg filters."""
+    configured_path = os.getenv("PAPER_VIDEO_FONT_PATH", "").strip()
+    configured_name = os.getenv("PAPER_VIDEO_FONT_NAME", "").strip()
+
+    if configured_path:
+        font_path = Path(configured_path).expanduser()
+        if not font_path.is_file():
+            raise FileNotFoundError(
+                f"PAPER_VIDEO_FONT_PATH 指向的字体不存在: {font_path}"
+            )
+        return font_path.resolve(), configured_name or font_path.stem
+
+    windows_font = Path("C:/Windows/Fonts/msyh.ttc")
+    if windows_font.is_file():
+        return windows_font, configured_name or "Microsoft YaHei"
+
+    return None, configured_name or "Noto Sans CJK SC"
+
+
 def build_chapter_navigation_filters(
     chapters: list[dict],
     current_chapter_index: int,
@@ -642,11 +665,11 @@ def build_chapter_navigation_filters(
         14,
         min(22, int((cell_width - 12) / max(longest_title, 1))),
     )
-    font_path = Path("C:/Windows/Fonts/msyh.ttc")
+    font_path, font_name = get_video_font()
     font_option = (
         f"fontfile='{escape_drawtext_text(font_path.as_posix())}'"
-        if font_path.is_file()
-        else "font='Microsoft YaHei'"
+        if font_path is not None
+        else f"font='{escape_drawtext_text(font_name)}'"
     )
 
     panel_y = 0
@@ -757,6 +780,7 @@ def build_segment_video(
     # Windows 下 subtitles filter 使用绝对路径比较麻烦，
     # 所以直接把工作目录切到 srt 所在目录
     subtitle_name = subtitle_path.name
+    _, font_name = get_video_font()
 
     filters = [
         (
@@ -767,7 +791,7 @@ def build_segment_video(
         (
             f"subtitles={subtitle_name}:"
             "force_style='"
-            "FontName=Microsoft YaHei,"
+            f"FontName={font_name},"
             "FontSize=8,"
             "PrimaryColour=&H00FFFFFF,"
             "OutlineColour=&H00000000,"
@@ -1099,13 +1123,20 @@ def compress_video_for_social(
     run_cmd(cmd)
 
 
-def build_video(paper_dir: str | Path, pdf_path: str | Path, preview_segments: list[int] | None = None):
+def build_video(
+    paper_dir: str | Path,
+    pdf_path: str | Path,
+    preview_segments: list[int] | None = None,
+):
+    paper_dir = Path(paper_dir).expanduser().resolve()
+    pdf_path = Path(pdf_path).expanduser().resolve()
+
     # pdf转文本和图片
-    pages, page_images = parse_pdf(
+    pages, _page_images = parse_pdf(
         pdf_path=pdf_path,
-        output_dir=fr"{paper_dir}\images",
+        output_dir=paper_dir / "images",
         zoom=2.0,
-        metadata_dir=fr"{paper_dir}\metadata",
+        metadata_dir=paper_dir / "metadata",
     )
 
     script_path = Path(paper_dir) / "output" / "paper_script.json"
@@ -1133,7 +1164,7 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path, preview_segments: l
     asyncio.run(
         generate_script_audio(
             script,
-            fr"{paper_dir}\audio",
+            paper_dir / "audio",
             tts_concurrency=tts_concurrency,
         )
     )
@@ -1147,17 +1178,17 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path, preview_segments: l
 
     # 生成srt字幕
     generate_segment_srts(
-        manifest_path=fr"{paper_dir}\audio\audio_manifest.json",
-        output_dir=fr"{paper_dir}\subtitles",
+        manifest_path=paper_dir / "audio" / "audio_manifest.json",
+        output_dir=paper_dir / "subtitles",
         max_chars=18,
     )
 
     # 合成segment中srt字幕
     video_files = build_all_segment_videos(
-        manifest_path=fr"{paper_dir}\audio\audio_manifest.json",
-        audio_dir=fr"{paper_dir}\audio",
-        image_dir=fr"{paper_dir}\images",
-        subtitle_dir=fr"{paper_dir}\subtitles",
+        manifest_path=paper_dir / "audio" / "audio_manifest.json",
+        audio_dir=paper_dir / "audio",
+        image_dir=paper_dir / "images",
+        subtitle_dir=paper_dir / "subtitles",
         output_dir=Path(paper_dir) / "output" / ("focus_preview_segments" if preview_segments else "segments"),
         visual_timeline=visual_timeline,
         segment_indices=preview_segments,
@@ -1183,14 +1214,73 @@ def build_video(paper_dir: str | Path, pdf_path: str | Path, preview_segments: l
         output_path=Path(paper_dir) / "output" / "final_social.mp4",
     )
 
-if __name__ == "__main__":
-    import argparse
+def default_output_dir(pdf_path: Path) -> Path:
+    """Return the default work directory without overwriting the input PDF."""
+    return pdf_path.parent / f"{pdf_path.stem}_output"
 
-    pdf = r"D:\push_agent\paper\2609.20804v1\2609.20804v1.pdf"
-    paper_dir = r"D:\push_agent\paper\2609.20804v1"
-    parser = argparse.ArgumentParser(description="论文讲解视频：独立图表镜头与词级时间对齐")
-    parser.add_argument("--paper-dir", default=paper_dir)
-    parser.add_argument("--pdf", default=pdf)
-    parser.add_argument("--preview-segments", type=int, nargs="+", help="只合成指定 segment 的聚焦预览")
-    arguments = parser.parse_args()
-    build_video(arguments.paper_dir, arguments.pdf, arguments.preview_segments)
+
+def missing_external_tools() -> list[str]:
+    """Return required command-line tools that are not available on PATH."""
+    return [tool for tool in ("ffmpeg", "ffprobe") if shutil.which(tool) is None]
+
+
+def create_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="将论文 PDF 转换为带配音、字幕和图表聚焦的竖屏讲解视频",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--pdf",
+        type=Path,
+        required=True,
+        help="输入论文 PDF 的路径",
+    )
+    parser.add_argument(
+        "--paper-dir",
+        type=Path,
+        help="工作目录；默认在 PDF 旁创建 <文件名>_output",
+    )
+    parser.add_argument(
+        "--preview-segments",
+        type=int,
+        nargs="+",
+        help="只合成指定 segment 的图表聚焦预览",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = create_argument_parser()
+    arguments = parser.parse_args(argv)
+    pdf_path = arguments.pdf.expanduser().resolve()
+    if not pdf_path.is_file():
+        parser.error(f"PDF 文件不存在: {pdf_path}")
+    if pdf_path.suffix.lower() != ".pdf":
+        parser.error(f"输入文件不是 PDF: {pdf_path}")
+
+    missing_tools = missing_external_tools()
+    if missing_tools:
+        parser.error(
+            "缺少外部依赖，请安装并加入 PATH: " + ", ".join(missing_tools)
+        )
+    if not os.getenv("DEEPSEEK_API_KEY", "").strip():
+        parser.error("未配置 DEEPSEEK_API_KEY，请复制 .env.example 为 .env 后填写")
+
+    paper_dir = (
+        arguments.paper_dir.expanduser().resolve()
+        if arguments.paper_dir
+        else default_output_dir(pdf_path)
+    )
+    build_video(
+        paper_dir=paper_dir,
+        pdf_path=pdf_path,
+        preview_segments=arguments.preview_segments,
+    )
+
+
+if __name__ == "__main__":
+    main()

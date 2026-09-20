@@ -8,7 +8,6 @@ from pathlib import Path
 
 from paper_video_agent.models import ChapterVisualPlan, PaperScript
 
-
 VISUAL_PROMPT = """你是论文讲解视频的视觉编导。根据已完成的口播选择需要展示的图片/表格截图。
 口播不能改写。默认展示 segment.page 对应的论文全页，只在解释具体图表内容时切换到截图。
 可跨论文页选择素材，但必须有明确的口播和素材内容依据。不要因为同页就强制展示。
@@ -146,7 +145,8 @@ def generate_visual_plan(
         else:
             # Reuse the project's configured provider. No model calls on import.
             from langchain_core.prompts import ChatPromptTemplate
-            from paper_video_agent.chat import llm, invoke_structured_with_retry
+
+            from paper_video_agent.chat import invoke_structured_with_retry, llm
 
             if chain is None:
                 chain = ChatPromptTemplate.from_messages([("human", VISUAL_PROMPT)]) | llm.with_structured_output(
