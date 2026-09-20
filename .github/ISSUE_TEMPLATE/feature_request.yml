@@ -1,0 +1,33 @@
+name: Feature request
+description: 提议新功能或体验改进
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景
+      description: 你希望解决什么问题？
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 建议方案
+      description: 描述期望行为、输入输出和可能的替代方案。
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围
+      options:
+        - PDF 解析
+        - 大模型脚本
+        - TTS 与字幕
+        - 视频合成
+        - 命令行与配置
+        - 文档或其他
+    validations:
+      required: true
+
