@@ -1,5 +1,6 @@
 import json
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -284,29 +285,35 @@ source_pages 是本章全部事实依据的候选页，可以跨越、合并和�
 ])
 
 
-llm = ChatDeepSeek(
-    model=LLM_MODEL,
-    base_url=LLM_BASE_URL,
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
-    temperature=LLM_TEMPERATURE,
-    max_tokens=LLM_MAX_TOKENS,
-    extra_body=LLM_EXTRA_BODY,
-)
+@lru_cache(maxsize=1)
+def get_llm() -> ChatDeepSeek:
+    """Create the API client only when a generation stage actually needs it."""
+    return ChatDeepSeek(
+        model=LLM_MODEL,
+        base_url=LLM_BASE_URL,
+        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        temperature=LLM_TEMPERATURE,
+        max_tokens=LLM_MAX_TOKENS,
+        extra_body=LLM_EXTRA_BODY,
+    )
 
-planning_llm = llm.with_structured_output(
-    PaperPlan,
-    method="function_calling",
-    include_raw=True,
-)
 
-chapter_llm = llm.with_structured_output(
-    VideoChapterScript,
-    method="function_calling",
-    include_raw=True,
-)
+@lru_cache(maxsize=1)
+def _get_planning_chain():
+    return planning_prompt | get_llm().with_structured_output(
+        PaperPlan,
+        method="function_calling",
+        include_raw=True,
+    )
 
-planning_chain = planning_prompt | planning_llm
-chapter_chain = chapter_prompt | chapter_llm
+
+@lru_cache(maxsize=1)
+def _get_chapter_chain():
+    return chapter_prompt | get_llm().with_structured_output(
+        VideoChapterScript,
+        method="function_calling",
+        include_raw=True,
+    )
 
 
 def script_generation_cache_material() -> dict:
@@ -409,7 +416,7 @@ def generate_video_plan(
     available_pages: set[int],
 ) -> PaperPlan:
     plan = invoke_structured_with_retry(
-        chain=planning_chain,
+        chain=_get_planning_chain(),
         values={
             "paper_content": paper_content,
         },
@@ -458,7 +465,7 @@ def generate_video_chapter(
     available_pages: set[int],
 ) -> VideoChapterScript:
     chapter_script = invoke_structured_with_retry(
-        chain=chapter_chain,
+        chain=_get_chapter_chain(),
         values={
             "paper_content": paper_content,
             "video_plan": video_plan.model_dump_json(indent=2),

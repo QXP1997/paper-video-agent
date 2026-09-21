@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +33,29 @@ def test_pdf_argument_is_required() -> None:
 
     with pytest.raises(SystemExit):
         parser.parse_args([])
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["paper_video_agent", "paper_video_agent.social_metadata"],
+)
+def test_help_does_not_require_api_key(module: str, tmp_path: Path) -> None:
+    environment = os.environ.copy()
+    environment["DEEPSEEK_API_KEY"] = ""
+    environment.pop("OPENAI_API_KEY", None)
+    environment.pop("OPENAI_ADMIN_KEY", None)
+
+    result = subprocess.run(
+        [sys.executable, "-m", module, "--help"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout.lower()
 
 
 @pytest.mark.parametrize(

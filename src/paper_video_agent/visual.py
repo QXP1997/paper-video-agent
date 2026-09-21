@@ -146,10 +146,10 @@ def generate_visual_plan(
             # Reuse the project's configured provider. No model calls on import.
             from langchain_core.prompts import ChatPromptTemplate
 
-            from paper_video_agent.chat import invoke_structured_with_retry, llm
+            from paper_video_agent.chat import get_llm, invoke_structured_with_retry
 
             if chain is None:
-                chain = ChatPromptTemplate.from_messages([("human", VISUAL_PROMPT)]) | llm.with_structured_output(
+                chain = ChatPromptTemplate.from_messages([("human", VISUAL_PROMPT)]) | get_llm().with_structured_output(
                     ChapterVisualPlan, method="function_calling", include_raw=True,
                 )
             feedback = ""

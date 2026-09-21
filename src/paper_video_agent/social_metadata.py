@@ -11,12 +11,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from paper_video_agent.chat import invoke_structured_with_retry, llm
+from paper_video_agent.chat import get_llm, invoke_structured_with_retry
 from paper_video_agent.models import PaperScript
 
 
@@ -72,11 +73,13 @@ metadata_prompt = ChatPromptTemplate.from_messages([
 ])
 
 
-metadata_chain = metadata_prompt | llm.with_structured_output(
-    SocialMetadata,
-    method="function_calling",
-    include_raw=True,
-)
+@lru_cache(maxsize=1)
+def _get_metadata_chain():
+    return metadata_prompt | get_llm().with_structured_output(
+        SocialMetadata,
+        method="function_calling",
+        include_raw=True,
+    )
 
 
 def _clip(text: str, limit: int) -> str:
@@ -138,7 +141,7 @@ def generate_social_metadata(
     summary = build_script_summary(script)
 
     metadata = invoke_structured_with_retry(
-        metadata_chain,
+        _get_metadata_chain(),
         {"script_summary": json.dumps(summary, ensure_ascii=False, indent=2)},
         stage="发布文案",
     )
