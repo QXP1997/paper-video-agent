@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
+from paper_video_agent.models import PaperScript
 from paper_video_agent.paper2video import (
+    build_script_cache_metadata,
     build_subtitles,
     create_argument_parser,
     default_output_dir,
@@ -10,7 +12,9 @@ from paper_video_agent.paper2video import (
     escape_drawtext_text,
     format_srt_time,
     get_video_font,
+    load_cached_paper_script,
     missing_external_tools,
+    save_paper_script,
     write_segment_srt,
 )
 
@@ -125,3 +129,67 @@ def test_write_segment_srt(tmp_path: Path) -> None:
     assert "00:00:00,000 --> 00:00:00,500" in content
     assert "你好。" in content
 
+
+def _paper_script() -> PaperScript:
+    planned_chapters = [
+        {
+            "chapter_id": f"chapter_{index:02d}",
+            "title": f"章节{index}",
+            "narrative_goal": "讲清楚问题",
+            "guiding_question": "为什么？",
+            "key_points": ["关键点"],
+            "takeaway": "核心结论",
+            "source_pages": [1],
+            "transition_goal": "引出下一部分",
+        }
+        for index in range(1, 5)
+    ]
+    return PaperScript.model_validate({
+        "title": "测试视频",
+        "plan": {
+            "video_title": "测试视频",
+            "core_message": "核心信息",
+            "central_question": "核心问题",
+            "story_spine": ["问题", "方法", "结论"],
+            "opening_hook": "开场",
+            "chapters": planned_chapters,
+        },
+        "chapters": [{
+            "chapter_id": "chapter_01",
+            "title": "章节1",
+            "segments": [{"page": 1, "text": "测试口播"}],
+        }],
+    })
+
+
+def test_script_cache_tracks_pdf_but_ignores_downstream_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"first revision")
+
+    original = build_script_cache_metadata(pdf_path)
+    monkeypatch.setenv("PAPER_VIDEO_TTS_VOICE", "another-voice")
+    monkeypatch.setenv("PAPER_VIDEO_FONT_NAME", "another-font")
+
+    assert build_script_cache_metadata(pdf_path) == original
+
+    pdf_path.write_bytes(b"second revision")
+    assert build_script_cache_metadata(pdf_path)["fingerprint"] != original["fingerprint"]
+
+
+def test_paper_script_is_reused_only_with_matching_fingerprint(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"paper")
+    script_path = tmp_path / "paper_script.json"
+    cache_path = tmp_path / "paper_script.cache.json"
+    cache = build_script_cache_metadata(pdf_path)
+    script = _paper_script()
+
+    save_paper_script(script, script_path, cache_path, cache)
+
+    assert load_cached_paper_script(script_path, cache_path, cache) == script
+
+    changed_cache = {**cache, "fingerprint": "different"}
+    assert load_cached_paper_script(script_path, cache_path, changed_cache) is None

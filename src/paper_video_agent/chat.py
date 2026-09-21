@@ -43,6 +43,20 @@ def _load_local_env() -> None:
 _load_local_env()
 
 
+# Bump this when script-generation behavior changes without a corresponding
+# prompt or output-schema change (for example, normalization or validation).
+SCRIPT_GENERATION_VERSION = 1
+LLM_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
+LLM_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+LLM_TEMPERATURE = 0.3
+LLM_MAX_TOKENS = 100000
+LLM_EXTRA_BODY = {
+    "thinking": {
+        "type": "disabled",
+    },
+}
+
+
 chapter_prompt = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -271,17 +285,12 @@ source_pages 是本章全部事实依据的候选页，可以跨越、合并和�
 
 
 llm = ChatDeepSeek(
-    model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
-    base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+    model=LLM_MODEL,
+    base_url=LLM_BASE_URL,
     api_key=os.getenv("DEEPSEEK_API_KEY"),
-    temperature=0.3,
-    max_tokens=100000,
-
-    extra_body={
-        "thinking": {
-            "type": "disabled"
-        }
-    }
+    temperature=LLM_TEMPERATURE,
+    max_tokens=LLM_MAX_TOKENS,
+    extra_body=LLM_EXTRA_BODY,
 )
 
 planning_llm = llm.with_structured_output(
@@ -298,6 +307,39 @@ chapter_llm = llm.with_structured_output(
 
 planning_chain = planning_prompt | planning_llm
 chapter_chain = chapter_prompt | chapter_llm
+
+
+def script_generation_cache_material() -> dict:
+    """Return deterministic, non-secret inputs that affect PaperScript output."""
+
+    def prompt_messages(prompt: ChatPromptTemplate) -> list[dict[str, str]]:
+        return [
+            {
+                "role": type(message).__name__,
+                "template": message.prompt.template,
+            }
+            for message in prompt.messages
+        ]
+
+    return {
+        "generation_version": SCRIPT_GENERATION_VERSION,
+        "llm": {
+            "model": LLM_MODEL,
+            "base_url": LLM_BASE_URL,
+            "temperature": LLM_TEMPERATURE,
+            "max_tokens": LLM_MAX_TOKENS,
+            "extra_body": LLM_EXTRA_BODY,
+        },
+        "prompts": {
+            "planning": prompt_messages(planning_prompt),
+            "chapter": prompt_messages(chapter_prompt),
+        },
+        "schemas": {
+            "paper_plan": PaperPlan.model_json_schema(),
+            "chapter_script": VideoChapterScript.model_json_schema(),
+            "paper_script": PaperScript.model_json_schema(),
+        },
+    }
 
 
 def _truncate_chapter_title(title: str, max_length: int = 8) -> str:

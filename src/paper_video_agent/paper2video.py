@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import copy
+import hashlib
 import json
 import math
 import os
@@ -10,34 +11,94 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from paper_video_agent import __version__
-from paper_video_agent.chat import generate_paper_script
+from paper_video_agent.chat import generate_paper_script, script_generation_cache_material
 from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
 from paper_video_agent.tts import generate_tts, get_tts_config
 from paper_video_agent.visual import align_visual_plan, generate_visual_plan
 
+SCRIPT_CACHE_VERSION = 1
+
+
+def _write_json_atomic(output_path: Path, data: dict) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_path.replace(output_path)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_script_cache_metadata(pdf_path: str | Path) -> dict:
+    """Describe only the inputs that can change ``paper_script.json``."""
+    pdf_path = Path(pdf_path)
+    generation_material = script_generation_cache_material()
+    generation_serialized = json.dumps(
+        generation_material,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    inputs = {
+        "pdf_sha256": _sha256_file(pdf_path),
+        "script_generation_sha256": hashlib.sha256(
+            generation_serialized.encode("utf-8")
+        ).hexdigest(),
+    }
+    serialized = json.dumps(
+        inputs,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return {
+        "version": SCRIPT_CACHE_VERSION,
+        "fingerprint": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+        "inputs": inputs,
+    }
+
+
+def load_cached_paper_script(
+    script_path: str | Path,
+    cache_path: str | Path,
+    expected_cache: dict,
+) -> PaperScript | None:
+    script_path = Path(script_path)
+    cache_path = Path(cache_path)
+    if not script_path.is_file() or not cache_path.is_file():
+        return None
+
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        if (
+            cache.get("version") != SCRIPT_CACHE_VERSION
+            or cache.get("fingerprint") != expected_cache["fingerprint"]
+        ):
+            return None
+        return PaperScript.model_validate_json(script_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
 
 def save_paper_script(
     _script: PaperScript,
     output_path: str | Path,
-):
+    cache_path: str | Path | None = None,
+    cache_metadata: dict | None = None,
+) -> None:
     output_path = Path(output_path)
-
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    with output_path.open(
-        "w",
-        encoding="utf-8",
-    ) as f:
-        json.dump(
-            _script.model_dump(),
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
+    _write_json_atomic(output_path, _script.model_dump())
+    if cache_path is not None and cache_metadata is not None:
+        _write_json_atomic(Path(cache_path), cache_metadata)
 
 # 生成视频segment.mp3以及audio_manifest.json
 async def generate_script_audio(
@@ -1140,16 +1201,29 @@ def build_video(
     )
 
     script_path = Path(paper_dir) / "output" / "paper_script.json"
+    script_cache_path = Path(paper_dir) / "output" / "paper_script.cache.json"
+    expected_script_cache = build_script_cache_metadata(pdf_path)
 
-    # 任务中断后优先复用已经生成完成的文案，避免重复调用模型。
-    if script_path.exists():
+    # Only reuse a script generated from the same PDF, prompts, schemas and
+    # LLM settings. TTS and rendering settings intentionally do not belong to
+    # this stage's fingerprint.
+    script = load_cached_paper_script(
+        script_path,
+        script_cache_path,
+        expected_script_cache,
+    )
+    if script is not None:
         print(f"复用已有论文脚本: {script_path}")
-        script = PaperScript.model_validate_json(
-            script_path.read_text(encoding="utf-8")
-        )
     else:
+        if script_path.exists():
+            print("论文、模型或脚本生成规则已变化，重新生成论文脚本")
         script = generate_paper_script(pages["pages"])
-        save_paper_script(script, script_path)
+        save_paper_script(
+            script,
+            script_path,
+            cache_path=script_cache_path,
+            cache_metadata=expected_script_cache,
+        )
 
     visual_plan = generate_visual_plan(
         script, Path(paper_dir) / "metadata",

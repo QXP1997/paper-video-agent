@@ -182,6 +182,7 @@ python -m paper_video_agent --version
 └── output/
     ├── segments/            # 分段视频
     ├── paper_script.json    # 叙事规划与口播稿
+    ├── paper_script.cache.json # 脚本输入指纹，用于安全续跑
     ├── social_metadata.json # 结构化标题、简介和标签（运行发布文案命令后生成）
     ├── social_metadata.md   # 可直接编辑的发布文案（运行发布文案命令后生成）
     ├── visual_plan.json     # 图表展示规划
@@ -189,7 +190,9 @@ python -m paper_video_agent --version
     └── final_social.mp4     # 社交平台压缩版
 ```
 
-已有的中间产物会尽量被复用。想从头生成时，请使用一个新的工作目录；删除已有产物前请先备份。
+已有的中间产物会尽量被复用。论文内容、脚本提示词、脚本结构或模型配置变化时，论文脚本会
+自动失效并重新生成；TTS 和渲染配置不会影响论文脚本缓存。想从头生成时，请使用一个新的
+工作目录；删除已有产物前请先备份。
 
 ## 配置
 
