@@ -300,6 +300,15 @@ planning_chain = planning_prompt | planning_llm
 chapter_chain = chapter_prompt | chapter_llm
 
 
+def _truncate_chapter_title(title: str, max_length: int = 8) -> str:
+    """Keep navigation titles compact without rejecting an otherwise valid plan."""
+    if len(title) <= max_length:
+        return title
+
+    ellipsis = "..."
+    return title[:max_length - len(ellipsis)].rstrip() + ellipsis
+
+
 def invoke_structured_with_retry(
     chain,
     values: dict,
@@ -382,6 +391,9 @@ def generate_video_plan(
         normalized_chapters.append(
             chapter.model_copy(update={
                 "chapter_id": f"chapter_{index:02d}",
+                # Title length is a display concern. Truncate model output
+                # instead of failing and regenerating the entire plan.
+                "title": _truncate_chapter_title(chapter.title),
                 # The prompt asks for at most four teaching points. Some
                 # function-calling models occasionally return five; trim the
                 # overflow instead of rejecting an otherwise valid plan.

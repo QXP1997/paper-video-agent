@@ -44,8 +44,10 @@ class VideoChapterPlan(BaseModel):
 
     title: str = Field(
         min_length=2,
-        max_length=8,
-        description="显示在视频进度条中的简短中文标题",
+        description=(
+            "显示在视频进度条中的简短中文标题；"
+            "过长标题会在业务逻辑中截断"
+        ),
     )
 
     narrative_goal: str = Field(
