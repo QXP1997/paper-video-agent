@@ -18,7 +18,7 @@ from typing import Protocol
 import edge_tts
 
 DEFAULT_TTS_VOICE = "zh-CN-XiaoxiaoNeural"
-DEFAULT_TTS_RATE = "+0%"
+DEFAULT_TTS_RATE = "+25%"
 DEFAULT_TTS_PITCH = "+0Hz"
 
 

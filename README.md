@@ -200,7 +200,7 @@ python -m paper_video_agent --version
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 兼容接口地址 |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | 使用的模型名称 |
 | `PAPER_VIDEO_TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | Edge TTS 音色 |
-| `PAPER_VIDEO_TTS_RATE` | `+0%` | 语速 |
+| `PAPER_VIDEO_TTS_RATE` | `+25%` | 语速，约为正常速度的 1.25 倍 |
 | `PAPER_VIDEO_TTS_PITCH` | `+0Hz` | 音高 |
 | `PAPER_VIDEO_TTS_CONCURRENCY` | `4` | 并发生成语音的数量 |
 | `PAPER_VIDEO_VIDEO_CONCURRENCY` | `3` | 并发合成视频的数量 |
