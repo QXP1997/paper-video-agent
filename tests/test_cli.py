@@ -8,6 +8,7 @@ import pytest
 from paper_video_agent.models import PaperScript
 from paper_video_agent.paper2video import (
     build_script_cache_metadata,
+    build_segment_video,
     build_subtitles,
     create_argument_parser,
     default_output_dir,
@@ -154,6 +155,36 @@ def test_write_segment_srt(tmp_path: Path) -> None:
     content = output_path.read_text(encoding="utf-8")
     assert "00:00:00,000 --> 00:00:00,500" in content
     assert "你好。" in content
+
+
+def test_segment_video_uses_only_full_pdf_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    def capture_command(command: list[str], cwd: Path | None = None) -> None:
+        captured["command"] = command
+        captured["cwd"] = cwd
+
+    monkeypatch.setattr("paper_video_agent.paper2video.run_cmd", capture_command)
+    build_segment_video(
+        image_path=tmp_path / "page_001.png",
+        audio_path=tmp_path / "segment_001.mp3",
+        subtitle_path=tmp_path / "segment_001.srt",
+        output_path=tmp_path / "segment_001.mp4",
+        chapters=[{"index": 1, "title": "开场"}],
+        current_chapter_index=1,
+        video_elapsed=0,
+        segment_duration=3,
+        video_duration=3,
+    )
+
+    command = captured["command"]
+    assert command.count("-i") == 2
+    assert "-vf" in command
+    assert "-filter_complex" not in command
+    assert str((tmp_path / "page_001.png").resolve()) in command
 
 
 def _paper_script() -> PaperScript:

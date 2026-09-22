@@ -1,19 +1,19 @@
 # Paper Video Agent
 
-将研究论文 PDF 自动转换为中文竖屏讲解视频：提取正文和图表，使用大模型规划叙事与口播，
-通过 Edge TTS 生成词级时间戳，最后由 FFmpeg 合成配音、字幕、章节进度和图表聚焦镜头。
+将研究论文 PDF 自动转换为中文竖屏讲解视频：提取分页正文并渲染完整页面，使用大模型规划
+叙事与口播，通过 Edge TTS 生成词级时间戳，最后由 FFmpeg 合成配音、字幕和章节进度。
 
 > 当前版本为 `0.1.0`（Alpha）。项目主要面向研究演示和内容创作，生成结果仍需人工核对。
 
 ## 功能
 
-- 从 PDF 提取分页文本、页面图像、论文插图和表格
+- 从 PDF 提取分页文本并渲染完整页面图像
 - 使用 DeepSeek 生成视频叙事规划、章节和中文口播稿
 - 使用 Edge TTS 生成语音与词级时间戳
 - 自动切分字幕并控制每屏最多两行
-- 根据讲解内容切换论文页面，并聚焦相关图表
+- 每个解说片段展示脚本指定的完整 PDF 页面
 - 输出高质量原片和适合社交平台上传的压缩版本
-- 支持中断续跑，复用已有脚本、语音和视觉规划缓存
+- 支持中断续跑，复用已有脚本和语音缓存
 - 根据最终脚本生成标题、简介和标签
 
 ## 效果展示
@@ -56,12 +56,10 @@
 
 ```mermaid
 flowchart LR
-    A[论文 PDF] --> B[文本与图表提取]
+    A[论文 PDF] --> B[文本提取与整页渲染]
     B --> C[叙事规划与口播生成]
     C --> D[Edge TTS 与词级时间轴]
-    B --> E[视觉规划]
     D --> F[字幕与分段视频]
-    E --> F
     F --> G[最终竖屏视频]
 ```
 
@@ -132,7 +130,7 @@ python -m paper_video_agent \
   --paper-dir "/path/to/workdir"
 ```
 
-只重新生成指定片段的图表聚焦预览：
+只重新生成指定片段的预览视频：
 
 ```bash
 python -m paper_video_agent \
@@ -177,7 +175,6 @@ python -m paper_video_agent --version
 <workdir>/
 ├── audio/                 # TTS 音频和时间轴清单
 ├── images/                # PDF 页面图像
-├── metadata/              # 文本、插图和表格元数据
 ├── subtitles/             # 分段 SRT 字幕
 └── output/
     ├── segments/            # 分段视频
@@ -185,7 +182,6 @@ python -m paper_video_agent --version
     ├── paper_script.cache.json # 脚本输入指纹，用于安全续跑
     ├── social_metadata.json # 结构化标题、简介和标签（运行发布文案命令后生成）
     ├── social_metadata.md   # 可直接编辑的发布文案（运行发布文案命令后生成）
-    ├── visual_plan.json     # 图表展示规划
     ├── final.mp4            # 高质量原片
     └── final_social.mp4     # 社交平台压缩版
 ```

@@ -15,7 +15,6 @@ from paper_video_agent.chat import generate_paper_script, script_generation_cach
 from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
 from paper_video_agent.tts import generate_tts, get_tts_config
-from paper_video_agent.visual import align_visual_plan, generate_visual_plan
 
 SCRIPT_CACHE_VERSION = 1
 
@@ -831,7 +830,6 @@ def build_segment_video(
     width: int = 1080,
     height: int = 1920,
     fps: int = 30,
-    focus_cues: list[dict] | None = None,
 ):
     output_path.parent.mkdir(
         parents=True,
@@ -887,39 +885,7 @@ def build_segment_video(
         # TTS
         "-i", str(audio_path.resolve()),
     ]
-    if focus_cues:
-        # Each screenshot becomes a complete white-backed frame. This replaces
-        # the PDF during its interval without cropping or stretching the asset.
-        graph = [f"[0:v]{','.join(filters[:2])},setsar=1[page]"]
-        previous = "page"
-        for index, cue in enumerate(focus_cues):
-            screenshot = Path(cue["image_path"])
-            if not screenshot.is_file():
-                raise FileNotFoundError(f"聚焦素材不存在: {screenshot}")
-            start, end = float(cue["start"]), float(cue["end"])
-            if not 0 <= start < end <= segment_duration + 0.001:
-                raise ValueError(f"聚焦时间范围无效: {start}, {end}")
-            cmd.extend(["-loop", "1", "-framerate", str(fps), "-i", str(screenshot.resolve())])
-            # Reserve the top 88 px for navigation and bottom 280 for subtitles.
-            content_height = height - 88 - 280
-            graph.append(
-                f"[{index + 2}:v]scale={width - 64}:{content_height}:"
-                "force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:88+({content_height}-ih)/2:white,"
-                f"setsar=1[asset{index}]"
-            )
-            label = f"view{index}"
-            graph.append(
-                f"[{previous}][asset{index}]overlay=0:0:"
-                f"enable='gte(t,{start:.3f})*lt(t,{end:.3f})'[{label}]"
-            )
-            previous = label
-        # Subtitles and navigation are rendered once, after all image switches.
-        graph.append(f"[{previous}]{','.join(filters[2:])}[video]")
-        cmd.extend(["-filter_complex_threads", "1", "-filter_complex", ";".join(graph),
-                    "-map", "[video]", "-map", "1:a:0"])
-    else:
-        cmd.extend(["-vf", vf, "-map", "0:v:0", "-map", "1:a:0"])
+    cmd.extend(["-vf", vf, "-map", "0:v:0", "-map", "1:a:0"])
     cmd.extend([
         "-r", str(fps),
 
@@ -972,7 +938,6 @@ def build_all_segment_videos(
     subtitle_dir: str | Path,
     output_dir: str | Path,
     video_concurrency: int = 2,
-    visual_timeline: dict | None = None,
     segment_indices: list[int] | None = None,
 ) -> list[Path]:
 
@@ -988,11 +953,6 @@ def build_all_segment_videos(
     )
 
     manifest = load_audio_timeline(manifest_path, audio_dir)
-    visual_by_index = {
-        item["segment_index"]: item["cues"]
-        for item in (visual_timeline or {}).get("segments", [])
-    }
-
     def build_one(segment: dict) -> Path:
         index = segment["index"]
         page = segment["page"]
@@ -1047,7 +1007,6 @@ def build_all_segment_videos(
             video_elapsed=float(segment["start_time"]),
             segment_duration=float(segment["duration"]),
             video_duration=float(manifest["duration"]),
-            focus_cues=visual_by_index.get(index, []),
         )
 
         return video_path
@@ -1197,7 +1156,6 @@ def build_video(
         pdf_path=pdf_path,
         output_dir=paper_dir / "images",
         zoom=2.0,
-        metadata_dir=paper_dir / "metadata",
     )
 
     script_path = Path(paper_dir) / "output" / "paper_script.json"
@@ -1225,11 +1183,6 @@ def build_video(
             cache_metadata=expected_script_cache,
         )
 
-    visual_plan = generate_visual_plan(
-        script, Path(paper_dir) / "metadata",
-        Path(paper_dir) / "output" / "visual_plan.json", pages["pages"],
-    )
-
     # 保存segment视频片段
     tts_concurrency = max(
         1,
@@ -1241,13 +1194,6 @@ def build_video(
             paper_dir / "audio",
             tts_concurrency=tts_concurrency,
         )
-    )
-
-    visual_timeline = align_visual_plan(
-        visual_plan,
-        load_audio_timeline(Path(paper_dir) / "audio" / "audio_manifest.json", Path(paper_dir) / "audio"),
-        Path(paper_dir) / "metadata",
-        Path(paper_dir) / "output" / "visual_timeline.json",
     )
 
     # 生成srt字幕
@@ -1263,8 +1209,7 @@ def build_video(
         audio_dir=paper_dir / "audio",
         image_dir=paper_dir / "images",
         subtitle_dir=paper_dir / "subtitles",
-        output_dir=Path(paper_dir) / "output" / ("focus_preview_segments" if preview_segments else "segments"),
-        visual_timeline=visual_timeline,
+        output_dir=Path(paper_dir) / "output" / ("preview_segments" if preview_segments else "segments"),
         segment_indices=preview_segments,
         video_concurrency=max(
             1,
@@ -1273,13 +1218,13 @@ def build_video(
     )
 
     # 合成高质量视频
-    final_path = Path(paper_dir) / "output" / ("focus_preview.mp4" if preview_segments else "final.mp4")
+    final_path = Path(paper_dir) / "output" / ("preview.mp4" if preview_segments else "final.mp4")
     concat_segment_videos(
         video_files=video_files,
         output_path=final_path,
     )
     if preview_segments:
-        print(f"图表聚焦预览已生成: {final_path}")
+        print(f"片段预览已生成: {final_path}")
         return
 
     # 另外生成一个体积更小、兼容性较好的社交平台发布版
@@ -1300,7 +1245,7 @@ def missing_external_tools() -> list[str]:
 
 def create_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="将论文 PDF 转换为带配音、字幕和图表聚焦的竖屏讲解视频",
+        description="将论文 PDF 转换为带配音、字幕和章节进度的竖屏讲解视频",
     )
     parser.add_argument(
         "--version",
@@ -1322,7 +1267,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         "--preview-segments",
         type=int,
         nargs="+",
-        help="只合成指定 segment 的图表聚焦预览",
+        help="只合成指定 segment 的预览视频",
     )
     return parser
 
