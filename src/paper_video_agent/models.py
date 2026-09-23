@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -144,3 +146,127 @@ class PaperScript(BaseModel):
         min_length=1,
         description="按视频播放顺序排列的视频章节",
     )
+
+
+class ClaimFactAudit(BaseModel):
+    """Evidence-bound review of one atomic claim in a narration segment."""
+
+    claim: str = Field(
+        min_length=1,
+        description="从口播中拆出的一个可独立核验的原子陈述",
+    )
+
+    verdict: Literal[
+        "supported",
+        "partially_supported",
+        "unsupported",
+        "conflicting",
+        "not_verifiable",
+    ] = Field(
+        description="仅根据本章 source_pages 中的证据得出的审核结论",
+    )
+
+    evidence_type: Literal[
+        "direct",
+        "derived",
+        "contextual",
+        "none",
+    ] = Field(
+        description="证据是原文直接陈述、可复算推导、上下文支持，还是不存在",
+    )
+
+    evidence_pages: list[int] = Field(
+        default_factory=list,
+        description="实际支持或反驳该陈述的 source_pages 子集",
+    )
+
+    evidence: str | None = Field(
+        default=None,
+        description="简短说明原文证据、推导依据或冲突位置",
+    )
+
+    issue: str | None = Field(
+        default=None,
+        description="事实错误、条件缺失、措辞过强或无法核验等具体问题",
+    )
+
+    severity: Literal["none", "low", "medium", "high"] = Field(
+        description="该问题对观众正确理解论文的影响程度",
+    )
+
+    suggested_revision: str | None = Field(
+        default=None,
+        description="存在问题时给出的最小修正建议；审核通过时为空",
+    )
+
+
+class SegmentFactAudit(BaseModel):
+    """Fact review for one narration segment."""
+
+    segment_index: int = Field(
+        ge=1,
+        description="当前章节内从 1 开始的 segment 序号",
+    )
+
+    claims: list[ClaimFactAudit] = Field(
+        default_factory=list,
+        description="该 segment 中需要核验的论文事实或论文相关解释",
+    )
+
+    notes: str | None = Field(
+        default=None,
+        description="没有可核验陈述时说明原因，否则通常为空",
+    )
+
+
+class ChapterFactAudit(BaseModel):
+    """Evidence review produced for a complete video chapter."""
+
+    chapter_id: str = Field(
+        min_length=1,
+        description="与被审核视频章节一致的章节 ID",
+    )
+
+    source_pages: list[int] = Field(
+        min_length=1,
+        description="本次审核允许使用的全部论文页码",
+    )
+
+    segments: list[SegmentFactAudit] = Field(
+        min_length=1,
+        description="逐个覆盖本章所有口播 segment 的审核结果",
+    )
+
+
+class ScriptAuditSummary(BaseModel):
+    """Deterministic aggregate counts for a paper-script audit."""
+
+    total_segments: int = Field(ge=0)
+    total_claims: int = Field(ge=0)
+    supported: int = Field(ge=0)
+    partially_supported: int = Field(ge=0)
+    unsupported: int = Field(ge=0)
+    conflicting: int = Field(ge=0)
+    not_verifiable: int = Field(ge=0)
+    high_severity_issues: int = Field(ge=0)
+
+
+class PaperScriptAudit(BaseModel):
+    """Fact-audit artifact for a complete paper narration script."""
+
+    script_title: str = Field(
+        min_length=1,
+        description="被审核脚本的视频标题",
+    )
+
+    evidence_scope: Literal["chapter_source_pages"] = Field(
+        default="chapter_source_pages",
+        description="审核严格限定在每章规划的 source_pages",
+    )
+
+    chapters: list[ChapterFactAudit] = Field(
+        min_length=1,
+        description="按脚本顺序排列的章节审核结果",
+    )
+
+    summary: ScriptAuditSummary

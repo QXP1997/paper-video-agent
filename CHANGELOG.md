@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增限定在章节 `source_pages` 内的口播事实审核节点，输出可缓存的 `script_audit.json`。
+
 ### Changed
 
 - 视频画面统一为脚本指定的完整 PDF 页面，保留字幕和章节进度。

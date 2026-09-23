@@ -11,6 +11,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from paper_video_agent import __version__
+from paper_video_agent.audit import (
+    build_audit_cache_metadata,
+    generate_script_fact_audit,
+    load_cached_script_audit,
+    save_script_audit,
+)
 from paper_video_agent.chat import generate_paper_script, script_generation_cache_material
 from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
@@ -1182,6 +1188,40 @@ def build_video(
             cache_path=script_cache_path,
             cache_metadata=expected_script_cache,
         )
+
+    audit_path = Path(paper_dir) / "output" / "script_audit.json"
+    audit_cache_path = Path(paper_dir) / "output" / "script_audit.cache.json"
+    expected_audit_cache = build_audit_cache_metadata(pages["pages"], script)
+    audit = load_cached_script_audit(
+        audit_path,
+        audit_cache_path,
+        expected_audit_cache,
+    )
+    if audit is not None:
+        print(f"复用已有事实审核: {audit_path}")
+    else:
+        if audit_path.exists():
+            print("论文来源页、脚本或审核规则已变化，重新审核论文脚本")
+        audit = generate_script_fact_audit(pages["pages"], script)
+        save_script_audit(
+            audit,
+            audit_path,
+            cache_path=audit_cache_path,
+            cache_metadata=expected_audit_cache,
+        )
+
+    summary = audit.summary
+    issue_count = (
+        summary.partially_supported
+        + summary.unsupported
+        + summary.conflicting
+        + summary.not_verifiable
+    )
+    print(
+        f"事实审核完成: {summary.total_claims} 条陈述，"
+        f"{issue_count} 条需要关注，"
+        f"{summary.high_severity_issues} 条高风险"
+    )
 
     # 保存segment视频片段
     tts_concurrency = max(

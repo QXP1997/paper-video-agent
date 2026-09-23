@@ -9,6 +9,7 @@
 
 - 从 PDF 提取分页文本并渲染完整页面图像
 - 使用 DeepSeek 生成视频叙事规划、章节和中文口播稿
+- 按章节规划的 `source_pages` 审核口播事实并保留证据记录
 - 使用 Edge TTS 生成语音与词级时间戳
 - 自动切分字幕并控制每屏最多两行
 - 每个解说片段展示脚本指定的完整 PDF 页面
@@ -58,8 +59,9 @@
 flowchart LR
     A[论文 PDF] --> B[文本提取与整页渲染]
     B --> C[叙事规划与口播生成]
-    C --> D[Edge TTS 与词级时间轴]
-    D --> F[字幕与分段视频]
+    C --> D[限定来源页的事实审核]
+    D --> E[Edge TTS 与词级时间轴]
+    E --> F[字幕与分段视频]
     F --> G[最终竖屏视频]
 ```
 
@@ -180,6 +182,8 @@ python -m paper_video_agent --version
     ├── segments/            # 分段视频
     ├── paper_script.json    # 叙事规划与口播稿
     ├── paper_script.cache.json # 脚本输入指纹，用于安全续跑
+    ├── script_audit.json    # 逐章节、逐片段的事实审核结果
+    ├── script_audit.cache.json # 审核输入指纹，用于安全续跑
     ├── social_metadata.json # 结构化标题、简介和标签（运行发布文案命令后生成）
     ├── social_metadata.md   # 可直接编辑的发布文案（运行发布文案命令后生成）
     ├── final.mp4            # 高质量原片
@@ -189,6 +193,10 @@ python -m paper_video_agent --version
 已有的中间产物会尽量被复用。论文内容、脚本提示词、脚本结构或模型配置变化时，论文脚本会
 自动失效并重新生成；TTS 和渲染配置不会影响论文脚本缓存。想从头生成时，请使用一个新的
 工作目录；删除已有产物前请先备份。
+
+事实审核严格以每章规划中的 `source_pages` 为证据范围：审核模型会看到该章完整口播和这些
+页面的解析文本，不会搜索或猜测论文其他页面。指定页无法支持的说法会在
+`script_audit.json` 中标记，但当前阶段不会自动修改口播或阻止视频继续生成。
 
 ## 配置
 
