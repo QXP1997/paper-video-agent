@@ -8,6 +8,8 @@
 
 - 新增限定在章节 `source_pages` 内的口播事实审核节点，输出可缓存的 `script_audit.json`。
 - 新增基于事实审核的全局口播编辑节点，输出可缓存的 `paper_script.edited.json`。
+- 新增最终确定性校验与按需局部返修节点，输出 `script_validation.json` 和最终脚本。
+- 最终校验仅阻断高风险事实与结构问题，数字密度、长度和轻度重复改为非阻断提醒。
 
 ### Changed
 

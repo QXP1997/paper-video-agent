@@ -24,6 +24,13 @@ from paper_video_agent.editor import (
     load_cached_edited_script,
     save_edited_script,
 )
+from paper_video_agent.finalizer import (
+    ScriptFinalizationError,
+    build_final_cache_metadata,
+    finalize_script,
+    load_cached_finalization,
+    save_finalization,
+)
 from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
 from paper_video_agent.tts import generate_tts, get_tts_config
@@ -1283,7 +1290,64 @@ def build_video(
         f"论文口播编辑完成: {raw_segment_count} → {edited_segment_count} 段，"
         f"{raw_character_count} → {edited_character_count} 字"
     )
-    script = edited_script
+
+    final_script_path = Path(paper_dir) / "output" / "paper_script.final.json"
+    validation_report_path = Path(paper_dir) / "output" / "script_validation.json"
+    final_cache_path = (
+        Path(paper_dir) / "output" / "paper_script.final.cache.json"
+    )
+    expected_final_cache = build_final_cache_metadata(
+        script,
+        audit,
+        edited_script,
+    )
+    cached_finalization = load_cached_finalization(
+        final_script_path,
+        validation_report_path,
+        final_cache_path,
+        expected_final_cache,
+    )
+    if cached_finalization is not None:
+        final_script, validation_report = cached_finalization
+        print(f"复用已通过校验的最终稿: {final_script_path}")
+    else:
+        print("正在执行最终脚本校验...")
+        try:
+            final_script, validation_report = finalize_script(
+                edited_script,
+                script,
+                audit,
+            )
+        except ScriptFinalizationError as exc:
+            save_finalization(
+                None,
+                exc.report,
+                final_script_path,
+                validation_report_path,
+            )
+            raise
+        save_finalization(
+            final_script,
+            validation_report,
+            final_script_path,
+            validation_report_path,
+            cache_path=final_cache_path,
+            cache_metadata=expected_final_cache,
+        )
+
+    final_metrics = validation_report.final_metrics
+    warning_count = sum(
+        issue.severity != "high"
+        for issue in validation_report.final_issues
+    )
+    print(
+        f"最终脚本校验通过: {final_metrics.chapter_count} 章，"
+        f"{final_metrics.segment_count} 段，"
+        f"{final_metrics.character_count} 字，"
+        f"返修 {validation_report.repair_rounds} 轮，"
+        f"保留 {warning_count} 条非阻断提醒"
+    )
+    script = final_script
 
     # 保存segment视频片段
     tts_concurrency = max(

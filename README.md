@@ -11,6 +11,7 @@
 - 使用 DeepSeek 生成视频叙事规划、章节和中文口播稿
 - 按章节规划的 `source_pages` 审核口播事实并保留证据记录
 - 根据事实审核全局修正、去重和精简口播，不覆盖原始脚本
+- 对编辑稿执行结构、重复、数字和审核遗留问题校验，失败时局部返修
 - 使用 Edge TTS 生成语音与词级时间戳
 - 自动切分字幕并控制每屏最多两行
 - 每个解说片段展示脚本指定的完整 PDF 页面
@@ -62,8 +63,9 @@ flowchart LR
     B --> C[叙事规划与口播生成]
     C --> D[限定来源页的事实审核]
     D --> E[事实修正与全局编辑]
-    E --> H[Edge TTS 与词级时间轴]
-    H --> F[字幕与分段视频]
+    E --> H[最终校验与局部返修]
+    H --> I[Edge TTS 与词级时间轴]
+    I --> F[字幕与分段视频]
     F --> G[最终竖屏视频]
 ```
 
@@ -147,7 +149,7 @@ python -m paper_video_agent \
 
 ```bash
 python -m paper_video_agent.social_metadata \
-  --script-json "/path/to/workdir/output/paper_script.edited.json"
+  --script-json "/path/to/workdir/output/paper_script.final.json"
 ```
 
 默认会在编辑稿所在目录生成：
@@ -159,7 +161,7 @@ python -m paper_video_agent.social_metadata \
 
 ```bash
 python -m paper_video_agent.social_metadata \
-  --script-json "/path/to/workdir/output/paper_script.edited.json" \
+  --script-json "/path/to/workdir/output/paper_script.final.json" \
   --output-dir "/path/to/metadata-output"
 ```
 
@@ -182,12 +184,15 @@ python -m paper_video_agent --version
 ├── subtitles/             # 分段 SRT 字幕
 └── output/
     ├── segments/            # 分段视频
-    ├── paper_script.json    # 叙事规划与口播稿
+    ├── paper_script.json    # 叙事规划与未经后处理的原始口播稿
     ├── paper_script.cache.json # 脚本输入指纹，用于安全续跑
     ├── script_audit.json    # 逐章节、逐片段的事实审核结果
     ├── script_audit.cache.json # 审核输入指纹，用于安全续跑
-    ├── paper_script.edited.json # 事实修正、去重和精简后的实际口播稿
+    ├── paper_script.edited.json # 事实修正、去重和精简后的候选口播稿
     ├── paper_script.edited.cache.json # 编辑节点输入指纹，用于安全续跑
+    ├── script_validation.json # 最终确定性校验与返修记录
+    ├── paper_script.final.json # 校验通过、实际用于视频的最终脚本
+    ├── paper_script.final.cache.json # 最终校验输入指纹，用于安全续跑
     ├── social_metadata.json # 结构化标题、简介和标签（运行发布文案命令后生成）
     ├── social_metadata.md   # 可直接编辑的发布文案（运行发布文案命令后生成）
     ├── final.mp4            # 高质量原片
@@ -204,8 +209,15 @@ python -m paper_video_agent --version
 
 编辑节点读取完整原始脚本和事实审核结果，不再次读取论文，也不会覆盖
 `paper_script.json`。它会处理审核问题、跨章节重复、数字堆叠和口播表达，输出
-`paper_script.edited.json`；TTS、字幕和视频使用编辑稿。该节点不设置固定时长目标，避免为了
-缩短而删掉理解核心方法所必需的内容。
+`paper_script.edited.json`。该节点不设置固定时长目标，避免为了缩短而删掉理解核心方法所
+必需的内容。
+
+最终校验节点优先使用确定性规则检查章节结构、页面范围、完全或高度相似的重复段落、单段
+数字密度、未经原始脚本或审核支持的新数字、过长段落，以及中高风险审核陈述是否原样残留。
+数字偏多、段落偏长、轻度重复和中风险审核遗留只写入 `script_validation.json` 作为非阻断
+提醒，不再触发返修或阻止视频。只有新数字、非法页面、结构错误或高风险事实问题才调用大
+模型做最多两轮局部返修；高风险问题仍未解决时才停止生成。通过后的
+`paper_script.final.json` 会交给 TTS、字幕和视频流程。
 
 ## 配置
 

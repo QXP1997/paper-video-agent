@@ -131,7 +131,7 @@ class VideoChapterScript(BaseModel):
 
 
 class PaperScript(BaseModel):
-    """The final chapter-aware video narration script."""
+    """A chapter-aware video narration script at any pipeline stage."""
 
     title: str = Field(
         min_length=1,
@@ -281,3 +281,45 @@ class EditedScriptChapters(BaseModel):
             "完成事实修正、去重、信息取舍和口语化后的全部视频章节"
         ),
     )
+
+
+class ScriptValidationIssue(BaseModel):
+    """One actionable problem found during final script validation."""
+
+    code: str = Field(
+        min_length=1,
+        description="稳定、可用于程序判断的问题代码",
+    )
+
+    severity: Literal["low", "medium", "high"]
+
+    message: str = Field(
+        min_length=1,
+        description="供返修节点和人工检查使用的具体问题说明",
+    )
+
+    chapter_id: str | None = None
+    segment_index: int | None = Field(default=None, ge=1)
+
+
+class ScriptValidationMetrics(BaseModel):
+    """Deterministic quality metrics for one script candidate."""
+
+    chapter_count: int = Field(ge=0)
+    segment_count: int = Field(ge=0)
+    character_count: int = Field(ge=0)
+    number_mentions: int = Field(ge=0)
+    numeric_dense_segments: int = Field(ge=0)
+    exact_duplicate_pairs: int = Field(ge=0)
+    fuzzy_duplicate_pairs: int = Field(ge=0)
+
+
+class ScriptValidationReport(BaseModel):
+    """Final validation result, including any constrained repair rounds."""
+
+    passed: bool
+    repair_rounds: int = Field(ge=0)
+    initial_metrics: ScriptValidationMetrics
+    final_metrics: ScriptValidationMetrics
+    initial_issues: list[ScriptValidationIssue] = Field(default_factory=list)
+    final_issues: list[ScriptValidationIssue] = Field(default_factory=list)

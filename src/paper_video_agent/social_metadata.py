@@ -170,7 +170,7 @@ def main() -> None:
         "--script-json",
         type=Path,
         required=True,
-        help="视频实际使用的脚本 JSON 路径，建议使用编辑稿",
+        help="视频实际使用的脚本 JSON 路径，建议使用最终稿",
     )
     parser.add_argument(
         "--output-dir",
