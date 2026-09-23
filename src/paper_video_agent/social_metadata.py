@@ -164,18 +164,18 @@ def generate_social_metadata(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="根据 paper_script.json 生成统一发布文案",
+        description="根据论文视频脚本 JSON 生成统一发布文案",
     )
     parser.add_argument(
         "--script-json",
         type=Path,
         required=True,
-        help="视频生成完成后的 paper_script.json 路径",
+        help="视频实际使用的脚本 JSON 路径，建议使用编辑稿",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        help="输出目录，默认写回 paper_script.json 所在的 output 目录",
+        help="输出目录，默认写回脚本 JSON 所在的 output 目录",
     )
     args = parser.parse_args()
 

@@ -270,3 +270,14 @@ class PaperScriptAudit(BaseModel):
     )
 
     summary: ScriptAuditSummary
+
+
+class EditedScriptChapters(BaseModel):
+    """Globally edited narration chapters returned by the editorial node."""
+
+    chapters: list[VideoChapterScript] = Field(
+        min_length=1,
+        description=(
+            "完成事实修正、去重、信息取舍和口语化后的全部视频章节"
+        ),
+    )

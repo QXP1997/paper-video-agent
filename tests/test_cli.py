@@ -1,3 +1,5 @@
+import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -15,6 +17,7 @@ from paper_video_agent.paper2video import (
     enrich_manifest_timeline,
     escape_drawtext_text,
     format_srt_time,
+    generate_script_audio,
     get_video_font,
     load_cached_paper_script,
     missing_external_tools,
@@ -250,3 +253,41 @@ def test_paper_script_is_reused_only_with_matching_fingerprint(tmp_path: Path) -
 
     changed_cache = {**cache, "fingerprint": "different"}
     assert load_cached_paper_script(script_path, cache_path, changed_cache) is None
+
+
+def test_reused_tts_refreshes_chapter_metadata(tmp_path: Path) -> None:
+    script = _paper_script()
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    (audio_dir / "segment_001.mp3").write_bytes(b"existing audio")
+    (audio_dir / "audio_manifest.json").write_text(
+        json.dumps({
+            "tts": {
+                "backend": "edge",
+                "voice": "zh-CN-XiaoxiaoNeural",
+                "rate": "+25%",
+                "pitch": "+0Hz",
+            },
+            "segments": [{
+                "index": 1,
+                "chapter_id": "old_chapter",
+                "chapter_index": 9,
+                "chapter_count": 9,
+                "chapter_title": "旧标题",
+                "chapter_segment_index": 9,
+                "chapter_segment_count": 9,
+                "page": 1,
+                "text": "测试口播",
+                "audio_file": "segment_001.mp3",
+                "words": [{"text": "测试", "start": 0.0, "end": 1.0}],
+            }],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    manifest = asyncio.run(generate_script_audio(script, audio_dir))
+
+    assert manifest["segments"][0]["chapter_id"] == "chapter_01"
+    assert manifest["segments"][0]["chapter_index"] == 1
+    assert manifest["segments"][0]["chapter_count"] == 1
+    assert manifest["segments"][0]["chapter_title"] == "章节1"

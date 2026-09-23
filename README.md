@@ -10,6 +10,7 @@
 - 从 PDF 提取分页文本并渲染完整页面图像
 - 使用 DeepSeek 生成视频叙事规划、章节和中文口播稿
 - 按章节规划的 `source_pages` 审核口播事实并保留证据记录
+- 根据事实审核全局修正、去重和精简口播，不覆盖原始脚本
 - 使用 Edge TTS 生成语音与词级时间戳
 - 自动切分字幕并控制每屏最多两行
 - 每个解说片段展示脚本指定的完整 PDF 页面
@@ -60,8 +61,9 @@ flowchart LR
     A[论文 PDF] --> B[文本提取与整页渲染]
     B --> C[叙事规划与口播生成]
     C --> D[限定来源页的事实审核]
-    D --> E[Edge TTS 与词级时间轴]
-    E --> F[字幕与分段视频]
+    D --> E[事实修正与全局编辑]
+    E --> H[Edge TTS 与词级时间轴]
+    H --> F[字幕与分段视频]
     F --> G[最终竖屏视频]
 ```
 
@@ -145,10 +147,10 @@ python -m paper_video_agent \
 
 ```bash
 python -m paper_video_agent.social_metadata \
-  --script-json "/path/to/workdir/output/paper_script.json"
+  --script-json "/path/to/workdir/output/paper_script.edited.json"
 ```
 
-默认会在 `paper_script.json` 所在目录生成：
+默认会在编辑稿所在目录生成：
 
 - `social_metadata.json`：便于程序继续处理的结构化发布信息
 - `social_metadata.md`：可直接复制、修改的标题、简介和标签
@@ -157,7 +159,7 @@ python -m paper_video_agent.social_metadata \
 
 ```bash
 python -m paper_video_agent.social_metadata \
-  --script-json "/path/to/workdir/output/paper_script.json" \
+  --script-json "/path/to/workdir/output/paper_script.edited.json" \
   --output-dir "/path/to/metadata-output"
 ```
 
@@ -184,6 +186,8 @@ python -m paper_video_agent --version
     ├── paper_script.cache.json # 脚本输入指纹，用于安全续跑
     ├── script_audit.json    # 逐章节、逐片段的事实审核结果
     ├── script_audit.cache.json # 审核输入指纹，用于安全续跑
+    ├── paper_script.edited.json # 事实修正、去重和精简后的实际口播稿
+    ├── paper_script.edited.cache.json # 编辑节点输入指纹，用于安全续跑
     ├── social_metadata.json # 结构化标题、简介和标签（运行发布文案命令后生成）
     ├── social_metadata.md   # 可直接编辑的发布文案（运行发布文案命令后生成）
     ├── final.mp4            # 高质量原片
@@ -197,6 +201,11 @@ python -m paper_video_agent --version
 事实审核严格以每章规划中的 `source_pages` 为证据范围：审核模型会看到该章完整口播和这些
 页面的解析文本，不会搜索或猜测论文其他页面。指定页无法支持的说法会在
 `script_audit.json` 中标记，但当前阶段不会自动修改口播或阻止视频继续生成。
+
+编辑节点读取完整原始脚本和事实审核结果，不再次读取论文，也不会覆盖
+`paper_script.json`。它会处理审核问题、跨章节重复、数字堆叠和口播表达，输出
+`paper_script.edited.json`；TTS、字幕和视频使用编辑稿。该节点不设置固定时长目标，避免为了
+缩短而删掉理解核心方法所必需的内容。
 
 ## 配置
 

@@ -7,6 +7,7 @@
 ### Added
 
 - 新增限定在章节 `source_pages` 内的口播事实审核节点，输出可缓存的 `script_audit.json`。
+- 新增基于事实审核的全局口播编辑节点，输出可缓存的 `paper_script.edited.json`。
 
 ### Changed
 

@@ -18,6 +18,12 @@ from paper_video_agent.audit import (
     save_script_audit,
 )
 from paper_video_agent.chat import generate_paper_script, script_generation_cache_material
+from paper_video_agent.editor import (
+    build_editor_cache_metadata,
+    generate_edited_script,
+    load_cached_edited_script,
+    save_edited_script,
+)
 from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
 from paper_video_agent.tts import generate_tts, get_tts_config
@@ -237,7 +243,20 @@ async def generate_script_audio(
                 f"{spec['chapter_segment_index']}/"
                 f"{spec['chapter_segment_count']}]"
             )
-            return _reusable
+            return {
+                **_reusable,
+                "index": index,
+                "chapter_id": chapter.chapter_id,
+                "chapter_index": spec["chapter_index"],
+                "chapter_count": chapter_count,
+                "chapter_title": chapter.title,
+                "chapter_segment_index": spec["chapter_segment_index"],
+                "chapter_segment_count": spec["chapter_segment_count"],
+                "page": segment.page,
+                "text": segment.text,
+                "tts": tts_config,
+                "audio_file": spec["audio_name"],
+            }
 
         async with semaphore:
             print(
@@ -1222,6 +1241,49 @@ def build_video(
         f"{issue_count} 条需要关注，"
         f"{summary.high_severity_issues} 条高风险"
     )
+
+    edited_script_path = Path(paper_dir) / "output" / "paper_script.edited.json"
+    editor_cache_path = (
+        Path(paper_dir) / "output" / "paper_script.edited.cache.json"
+    )
+    expected_editor_cache = build_editor_cache_metadata(script, audit)
+    edited_script = load_cached_edited_script(
+        edited_script_path,
+        editor_cache_path,
+        expected_editor_cache,
+    )
+    if edited_script is not None:
+        print(f"复用已有编辑稿: {edited_script_path}")
+    else:
+        if edited_script_path.exists():
+            print("原始脚本、事实审核或编辑规则已变化，重新编辑论文脚本")
+        edited_script = generate_edited_script(script, audit)
+        save_edited_script(
+            edited_script,
+            edited_script_path,
+            cache_path=editor_cache_path,
+            cache_metadata=expected_editor_cache,
+        )
+
+    raw_segment_count = sum(len(chapter.segments) for chapter in script.chapters)
+    edited_segment_count = sum(
+        len(chapter.segments) for chapter in edited_script.chapters
+    )
+    raw_character_count = sum(
+        len(segment.text)
+        for chapter in script.chapters
+        for segment in chapter.segments
+    )
+    edited_character_count = sum(
+        len(segment.text)
+        for chapter in edited_script.chapters
+        for segment in chapter.segments
+    )
+    print(
+        f"论文口播编辑完成: {raw_segment_count} → {edited_segment_count} 段，"
+        f"{raw_character_count} → {edited_character_count} 字"
+    )
+    script = edited_script
 
     # 保存segment视频片段
     tts_concurrency = max(
