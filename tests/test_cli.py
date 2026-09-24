@@ -9,6 +9,7 @@ import pytest
 
 from paper_video_agent.models import PaperScript
 from paper_video_agent.paper2video import (
+    build_all_segment_videos,
     build_script_cache_metadata,
     build_segment_video,
     build_subtitles,
@@ -20,6 +21,7 @@ from paper_video_agent.paper2video import (
     generate_script_audio,
     get_video_font,
     load_cached_paper_script,
+    main,
     missing_external_tools,
     save_paper_script,
     write_segment_srt,
@@ -92,6 +94,26 @@ def test_missing_external_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     assert missing_external_tools() == ["ffprobe"]
+
+
+def test_main_allows_cached_run_without_api_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"paper")
+    called = {}
+
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("paper_video_agent.paper2video.missing_external_tools", lambda: [])
+    monkeypatch.setattr(
+        "paper_video_agent.paper2video.build_video",
+        lambda **kwargs: called.update(kwargs),
+    )
+
+    main(["--pdf", str(pdf_path)])
+
+    assert called["pdf_path"] == pdf_path.resolve()
 
 
 def test_enrich_manifest_timeline() -> None:
@@ -188,6 +210,104 @@ def test_segment_video_uses_only_full_pdf_page(
     assert "-vf" in command
     assert "-filter_complex" not in command
     assert str((tmp_path / "page_001.png").resolve()) in command
+
+
+def test_segment_videos_resume_after_partial_ffmpeg_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audio_dir = tmp_path / "audio"
+    image_dir = tmp_path / "images"
+    subtitle_dir = tmp_path / "subtitles"
+    output_dir = tmp_path / "output"
+    for directory in (audio_dir, image_dir, subtitle_dir):
+        directory.mkdir()
+    for index in (1, 2):
+        (audio_dir / f"segment_{index:03d}.mp3").write_bytes(f"audio {index}".encode())
+        (subtitle_dir / f"segment_{index:03d}.srt").write_text(
+            f"subtitle {index}",
+            encoding="utf-8",
+        )
+    (image_dir / "page_001.png").write_bytes(b"image")
+
+    manifest = {
+        "duration": 2.0,
+        "chapters": [{"index": 1, "title": "chapter"}],
+        "segments": [
+            {
+                "index": index,
+                "page": 1,
+                "chapter_index": 1,
+                "start_time": float(index - 1),
+                "duration": 1.0,
+            }
+            for index in (1, 2)
+        ],
+    }
+    monkeypatch.setattr(
+        "paper_video_agent.paper2video.load_audio_timeline",
+        lambda *_args: manifest,
+    )
+
+    first_attempt = []
+
+    def fail_second_segment(**kwargs) -> None:
+        index = int(kwargs["audio_path"].stem.rsplit("_", 1)[1])
+        first_attempt.append(index)
+        if index == 2:
+            raise RuntimeError("ffmpeg failed")
+        kwargs["output_path"].write_bytes(b"video 1")
+
+    monkeypatch.setattr(
+        "paper_video_agent.paper2video.build_segment_video",
+        fail_second_segment,
+    )
+    with pytest.raises(RuntimeError, match="ffmpeg failed"):
+        build_all_segment_videos(
+            tmp_path / "manifest.json",
+            audio_dir,
+            image_dir,
+            subtitle_dir,
+            output_dir,
+            video_concurrency=1,
+        )
+
+    assert first_attempt == [1, 2]
+
+    resumed = []
+
+    def finish_render(**kwargs) -> None:
+        index = int(kwargs["audio_path"].stem.rsplit("_", 1)[1])
+        resumed.append(index)
+        kwargs["output_path"].write_bytes(f"video {index}".encode())
+
+    monkeypatch.setattr(
+        "paper_video_agent.paper2video.build_segment_video",
+        finish_render,
+    )
+    build_all_segment_videos(
+        tmp_path / "manifest.json",
+        audio_dir,
+        image_dir,
+        subtitle_dir,
+        output_dir,
+        video_concurrency=1,
+    )
+
+    assert resumed == [2]
+
+    resumed.clear()
+    (subtitle_dir / "segment_002.srt").write_text("changed", encoding="utf-8")
+    build_all_segment_videos(
+        tmp_path / "manifest.json",
+        audio_dir,
+        image_dir,
+        subtitle_dir,
+        output_dir,
+        video_concurrency=1,
+    )
+
+    assert resumed == [2]
 
 
 def _paper_script() -> PaperScript:

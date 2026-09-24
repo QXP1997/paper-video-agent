@@ -30,12 +30,37 @@ from paper_video_agent.finalizer import (
     finalize_script,
     load_cached_finalization,
     save_finalization,
+    validate_final_script,
 )
 from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
 from paper_video_agent.tts import generate_tts, get_tts_config
 
 SCRIPT_CACHE_VERSION = 1
+SEGMENT_VIDEO_CACHE_VERSION = 1
+SEGMENT_VIDEO_RENDER_SETTINGS = {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "video_codec": "libx264",
+    "preset": "medium",
+    "crf": 20,
+    "pixel_format": "yuv420p",
+    "audio_codec": "aac",
+    "audio_bitrate": "192k",
+}
+
+
+class MissingDeepSeekAPIKeyError(RuntimeError):
+    """Raised only when an uncached LLM stage needs DeepSeek."""
+
+
+def require_deepseek_api_key(stage: str) -> None:
+    if not os.getenv("DEEPSEEK_API_KEY", "").strip():
+        raise MissingDeepSeekAPIKeyError(
+            f"{stage}没有可复用缓存，需要配置 DEEPSEEK_API_KEY；"
+            "请复制 .env.example 为 .env 后填写"
+        )
 
 
 def _write_json_atomic(output_path: Path, data: dict) -> None:
@@ -54,6 +79,16 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _canonical_sha256(data: object) -> str:
+    serialized = json.dumps(
+        data,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def build_script_cache_metadata(pdf_path: str | Path) -> dict:
@@ -963,6 +998,56 @@ def load_audio_timeline(manifest_path: str | Path, audio_dir: str | Path) -> dic
     return enrich_manifest_timeline(manifest)
 
 
+def build_segment_video_cache_metadata(
+    *,
+    image_path: Path,
+    audio_path: Path,
+    subtitle_path: Path,
+    chapters: list[dict],
+    current_chapter_index: int,
+    video_elapsed: float,
+    segment_duration: float,
+    video_duration: float,
+) -> dict:
+    """Fingerprint every input that can affect a rendered segment."""
+    inputs = {
+        "image_sha256": _sha256_file(image_path),
+        "audio_sha256": _sha256_file(audio_path),
+        "subtitle_sha256": _sha256_file(subtitle_path),
+        "chapters": chapters,
+        "current_chapter_index": current_chapter_index,
+        "video_elapsed": video_elapsed,
+        "segment_duration": segment_duration,
+        "video_duration": video_duration,
+        "render_settings": SEGMENT_VIDEO_RENDER_SETTINGS,
+    }
+    return {
+        "version": SEGMENT_VIDEO_CACHE_VERSION,
+        "fingerprint": _canonical_sha256(inputs),
+        "inputs": inputs,
+    }
+
+
+def is_reusable_segment_video(
+    video_path: Path,
+    cache_path: Path,
+    expected_cache: dict,
+) -> bool:
+    if not video_path.is_file() or not cache_path.is_file():
+        return False
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        output_size = video_path.stat().st_size
+        return (
+            cache.get("version") == SEGMENT_VIDEO_CACHE_VERSION
+            and cache.get("fingerprint") == expected_cache["fingerprint"]
+            and cache.get("output", {}).get("size") == output_size
+            and output_size > 0
+        )
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return False
+
+
 def build_all_segment_videos(
     manifest_path: str | Path,
     audio_dir: str | Path,
@@ -1009,6 +1094,8 @@ def build_all_segment_videos(
             / f"segment_{index:03d}.mp4"
         )
 
+        cache_path = video_path.with_suffix(video_path.suffix + ".cache.json")
+
         if not audio_path.exists():
             raise FileNotFoundError(
                 f"音频不存在: {audio_path}"
@@ -1024,22 +1111,49 @@ def build_all_segment_videos(
                 f"PDF 页面不存在: {image_path}"
             )
 
-        print(
-            f"\n[{index}/{len(manifest['segments'])}] "
-            f"page={page}"
-        )
-
-        build_segment_video(
+        cache_metadata = build_segment_video_cache_metadata(
             image_path=image_path,
             audio_path=audio_path,
             subtitle_path=subtitle_path,
-            output_path=video_path,
             chapters=manifest["chapters"],
             current_chapter_index=segment["chapter_index"],
             video_elapsed=float(segment["start_time"]),
             segment_duration=float(segment["duration"]),
             video_duration=float(manifest["duration"]),
         )
+        if is_reusable_segment_video(video_path, cache_path, cache_metadata):
+            print(
+                f"\n[{index}/{len(manifest['segments'])}] "
+                f"复用分段视频: {video_path}"
+            )
+            return video_path
+
+        print(
+            f"\n[{index}/{len(manifest['segments'])}] "
+            f"page={page}"
+        )
+
+        temporary_video_path = video_path.with_name(
+            f"{video_path.stem}.tmp{video_path.suffix}"
+        )
+        try:
+            build_segment_video(
+                image_path=image_path,
+                audio_path=audio_path,
+                subtitle_path=subtitle_path,
+                output_path=temporary_video_path,
+                chapters=manifest["chapters"],
+                current_chapter_index=segment["chapter_index"],
+                video_elapsed=float(segment["start_time"]),
+                segment_duration=float(segment["duration"]),
+                video_duration=float(manifest["duration"]),
+            )
+            temporary_video_path.replace(video_path)
+            cache_metadata["output"] = {"size": video_path.stat().st_size}
+            _write_json_atomic(cache_path, cache_metadata)
+        finally:
+            if temporary_video_path.exists():
+                temporary_video_path.unlink()
 
         return video_path
 
@@ -1207,6 +1321,7 @@ def build_video(
     else:
         if script_path.exists():
             print("论文、模型或脚本生成规则已变化，重新生成论文脚本")
+        require_deepseek_api_key("论文脚本")
         script = generate_paper_script(pages["pages"])
         save_paper_script(
             script,
@@ -1228,6 +1343,7 @@ def build_video(
     else:
         if audit_path.exists():
             print("论文来源页、脚本或审核规则已变化，重新审核论文脚本")
+        require_deepseek_api_key("事实审核")
         audit = generate_script_fact_audit(pages["pages"], script)
         save_script_audit(
             audit,
@@ -1264,6 +1380,7 @@ def build_video(
     else:
         if edited_script_path.exists():
             print("原始脚本、事实审核或编辑规则已变化，重新编辑论文脚本")
+        require_deepseek_api_key("论文口播编辑")
         edited_script = generate_edited_script(script, audit)
         save_edited_script(
             edited_script,
@@ -1312,6 +1429,13 @@ def build_video(
         print(f"复用已通过校验的最终稿: {final_script_path}")
     else:
         print("正在执行最终脚本校验...")
+        initial_issues, _initial_metrics = validate_final_script(
+            edited_script,
+            script,
+            audit,
+        )
+        if any(issue.severity == "high" for issue in initial_issues):
+            require_deepseek_api_key("最终脚本返修")
         try:
             final_script, validation_report = finalize_script(
                 edited_script,
@@ -1452,19 +1576,19 @@ def main(argv: list[str] | None = None) -> None:
         parser.error(
             "缺少外部依赖，请安装并加入 PATH: " + ", ".join(missing_tools)
         )
-    if not os.getenv("DEEPSEEK_API_KEY", "").strip():
-        parser.error("未配置 DEEPSEEK_API_KEY，请复制 .env.example 为 .env 后填写")
-
     paper_dir = (
         arguments.paper_dir.expanduser().resolve()
         if arguments.paper_dir
         else default_output_dir(pdf_path)
     )
-    build_video(
-        paper_dir=paper_dir,
-        pdf_path=pdf_path,
-        preview_segments=arguments.preview_segments,
-    )
+    try:
+        build_video(
+            paper_dir=paper_dir,
+            pdf_path=pdf_path,
+            preview_segments=arguments.preview_segments,
+        )
+    except MissingDeepSeekAPIKeyError as exc:
+        parser.error(str(exc))
 
 
 if __name__ == "__main__":
