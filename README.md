@@ -1,13 +1,13 @@
 # Paper Video Agent
 
-将研究论文 PDF 自动转换为中文竖屏讲解视频：提取分页正文并渲染完整页面，使用大模型规划
+将研究论文 PDF 自动转换为中文竖屏讲解视频：使用 MinerU 提取分页正文并渲染完整页面，使用大模型规划
 叙事与口播，通过 Edge TTS 生成词级时间戳，最后由 FFmpeg 合成配音、字幕和章节进度。
 
 > 当前版本为 `0.1.0`（Alpha）。项目主要面向研究演示和内容创作，生成结果仍需人工核对。
 
 ## 功能
 
-- 从 PDF 提取分页文本并渲染完整页面图像
+- 使用 MinerU 官网 API 提取 PDF 分页文本，并渲染完整页面图像
 - 使用 DeepSeek 生成视频叙事规划、章节和中文口播稿
 - 按章节规划的 `source_pages` 审核口播事实并保留证据记录
 - 根据事实审核全局修正、去重和精简口播，不覆盖原始脚本
@@ -73,7 +73,7 @@ flowchart LR
 
 - Python 3.11 或更高版本（当前已在 Python 3.12 上验证）
 - [FFmpeg](https://ffmpeg.org/) 和 `ffprobe`，且二者均已加入 `PATH`
-- 可访问 DeepSeek API 与 Edge TTS 服务的网络环境
+- 可访问 MinerU、DeepSeek API 与 Edge TTS 服务的网络环境
 - 一个支持中文的字体
 
 FFmpeg 需要包含 `drawtext` 和 `subtitles`（libass）滤镜。可运行以下命令检查：
@@ -110,12 +110,13 @@ python -m pip install -e .
 cp .env.example .env
 ```
 
-然后编辑 `.env`，至少配置：
+然后编辑 `.env`，至少配置 DeepSeek 和 MinerU 的 API Key：
 
 ```dotenv
 DEEPSEEK_API_KEY=your_deepseek_api_key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-flash
+MINERU_API_KEY=your_mineru_api_key
 ```
 
 `.env` 已被 Git 忽略。不要将真实 API Key 写入 README、Issue、日志或提交历史。
@@ -183,6 +184,7 @@ python -m paper_video_agent --version
 ├── images/                # PDF 页面图像
 ├── subtitles/             # 分段 SRT 字幕
 └── output/
+    ├── mineru_parse.json   # MinerU 分页解析结果与源 PDF 指纹缓存
     ├── segments/            # 分段视频
     ├── paper_script.json    # 叙事规划与未经后处理的原始口播稿
     ├── paper_script.cache.json # 脚本输入指纹，用于安全续跑
@@ -228,6 +230,7 @@ python -m paper_video_agent --version
 | `DEEPSEEK_API_KEY` | 无 | DeepSeek API Key |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | 兼容接口地址 |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | 使用的模型名称 |
+| `MINERU_API_KEY` | 无 | MinerU 官网 API Token（只写入本地 `.env`，不写入 `.env.example`） |
 | `PAPER_VIDEO_TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | Edge TTS 音色 |
 | `PAPER_VIDEO_TTS_RATE` | `+25%` | 语速，约为正常速度的 1.25 倍 |
 | `PAPER_VIDEO_TTS_PITCH` | `+0Hz` | 音高 |
@@ -251,7 +254,7 @@ pytest
 ## 已知限制
 
 - 大模型输出可能存在事实错误、遗漏或不准确引用，发布前必须对照原论文审阅。
-- 复杂双栏排版、扫描版 PDF、特殊公式和非常规表格可能无法准确提取。
+- MinerU 对复杂双栏排版、扫描件、公式和表格的识别结果仍可能需要人工核对。
 - 完整视频生成会调用第三方网络服务并产生 API 费用。
 - 视频合成速度和内存占用与论文页数、分辨率及并发设置有关。
 - 当前主要生成中文、9:16 竖屏视频，尚未提供完整的样式配置接口。

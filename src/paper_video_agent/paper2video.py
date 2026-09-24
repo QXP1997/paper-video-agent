@@ -36,7 +36,7 @@ from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
 from paper_video_agent.tts import generate_tts, get_tts_config
 
-SCRIPT_CACHE_VERSION = 1
+SCRIPT_CACHE_VERSION = 2
 SEGMENT_VIDEO_CACHE_VERSION = 1
 SEGMENT_VIDEO_RENDER_SETTINGS = {
     "width": 1080,
