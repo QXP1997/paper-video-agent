@@ -23,6 +23,7 @@ from paper_video_agent.models import ChapterVisualReview, PaperScript
 
 VISUAL_REVIEW_VERSION = 1
 MIN_FOCUS_SECONDS = 2.0
+DEFAULT_SAME_VISUAL_MERGE_GAP_SECONDS = 5.0
 VISUAL_REVIEW_PROMPT = """
 你是论文讲解视频的视觉脚本审核员。口播已经定稿，你不能改写口播；你只决定何时临时从 PDF
 全页切换到某张图、某个表格、某条公式或带标题的代码块，以及何时切回全页。
@@ -455,11 +456,84 @@ def generate_visual_review(
     return result
 
 
+def _merge_nearby_same_visual_cues(
+    segments: list[dict],
+    max_gap_seconds: float,
+) -> None:
+    """Keep the same visual on screen across short gaps between adjacent cues."""
+    if max_gap_seconds < 0:
+        raise ValueError("相同视觉合并间隔不能小于零")
+
+    cue_ranges = []
+    for segment in segments:
+        segment_start = float(segment.get("start_time", 0))
+        for cue in segment.get("cues", []):
+            cue_ranges.append({
+                "start": segment_start + float(cue["start"]),
+                "end": segment_start + float(cue["end"]),
+                "cue": cue,
+                "segment": segment,
+            })
+    cue_ranges.sort(key=lambda item: (item["start"], item["end"]))
+
+    groups = []
+    for cue_range in cue_ranges:
+        if (
+            groups
+            and cue_range["cue"]["visual_id"] == groups[-1]["cue"]["visual_id"]
+            and cue_range["start"] - groups[-1]["end"] <= max_gap_seconds
+        ):
+            groups[-1]["end"] = max(groups[-1]["end"], cue_range["end"])
+            groups[-1]["count"] += 1
+            groups[-1]["end_quote"] = cue_range["cue"].get("end_quote", "")
+        else:
+            groups.append({
+                **cue_range,
+                "count": 1,
+                "end_quote": cue_range["cue"].get("end_quote", ""),
+            })
+
+    for segment in segments:
+        segment["cues"] = []
+
+    for group in groups:
+        if group["count"] == 1:
+            group["segment"]["cues"].append(group["cue"])
+            continue
+
+        for segment in segments:
+            segment_start = float(segment.get("start_time", 0))
+            segment_end = segment_start + float(segment["duration"])
+            overlap_start = max(group["start"], segment_start)
+            overlap_end = min(group["end"], segment_end)
+            if overlap_end <= overlap_start:
+                continue
+
+            local_start = round(overlap_start - segment_start, 3)
+            local_end = round(overlap_end - segment_start, 3)
+            if local_end <= local_start:
+                continue
+
+            cue = {
+                **group["cue"],
+                "start": local_start,
+                "end": local_end,
+            }
+            cue["end_quote"] = group["end_quote"]
+            cue["merged_cue_count"] = group["count"]
+            segment["cues"].append(cue)
+
+    for segment in segments:
+        segment["cues"].sort(key=lambda cue: (cue["start"], cue["end"]))
+
+
 def align_visual_review(
     review: dict,
     manifest: dict,
     assets: dict[str, dict],
     output_path: str | Path,
+    *,
+    same_visual_merge_gap_seconds: float = DEFAULT_SAME_VISUAL_MERGE_GAP_SECONDS,
 ) -> dict:
     """Map quote anchors onto TTS word timestamps; reject uncertain switches."""
     planned = {
@@ -543,5 +617,9 @@ def align_visual_review(
             "cues": cues,
         })
 
+    _merge_nearby_same_visual_cues(
+        result["segments"],
+        same_visual_merge_gap_seconds,
+    )
     _save_json_atomic(Path(output_path), result)
     return result

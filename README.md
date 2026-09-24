@@ -219,6 +219,10 @@ python -m paper_video_agent --version
 原文锚点临时切换到 MinerU 素材，讲解结束后自动切回全页。时间锚点无法与 TTS 可靠
 对齐、区间重叠或聚焦不足两秒时，会安全降级为 PDF 全页。
 
+相邻两次聚焦如果使用同一素材、间隔不超过 5 秒，会自动合并为连续展示，避免在短暂
+补充说明期间来回闪切。可通过 `PAPER_VIDEO_VISUAL_MERGE_GAP_SECONDS` 调整该阈值；设为
+`0` 时只合并首尾相接的区间。
+
 事实审核严格以每章规划中的 `source_pages` 为证据范围：审核模型会看到该章完整口播和这些
 页面的解析文本，不会搜索或猜测论文其他页面。指定页无法支持的说法会在
 `script_audit.json` 中标记，但当前阶段不会自动修改口播或阻止视频继续生成。
@@ -250,6 +254,7 @@ python -m paper_video_agent --version
 | `PAPER_VIDEO_TTS_PITCH` | `+0Hz` | 音高 |
 | `PAPER_VIDEO_TTS_CONCURRENCY` | `4` | 并发生成语音的数量 |
 | `PAPER_VIDEO_VIDEO_CONCURRENCY` | `3` | 并发合成视频的数量 |
+| `PAPER_VIDEO_VISUAL_MERGE_GAP_SECONDS` | `5` | 相同视觉素材连续展示的最大间隔（秒） |
 | `PAPER_VIDEO_FONT_NAME` | 平台相关 | FFmpeg 使用的中文字体名称 |
 | `PAPER_VIDEO_FONT_PATH` | 无 | 中文字体文件的绝对路径，优先于字体名称 |
 

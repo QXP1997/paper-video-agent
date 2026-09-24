@@ -11,6 +11,7 @@ from paper_video_agent.models import (
     PaperVisual,
 )
 from paper_video_agent.visual import (
+    _merge_nearby_same_visual_cues,
     _validate_review,
     align_visual_review,
     generate_visual_review,
@@ -99,6 +100,106 @@ def test_visual_timeline_rejects_ambiguous_or_short_focus(
         [_cue("现在看表", "现在看表")],
     )
     assert too_short["segments"][0]["cues"] == []
+
+
+def test_visual_timeline_merges_nearby_cues_for_same_visual(
+    tmp_path: Path,
+) -> None:
+    result = _align(
+        tmp_path,
+        "先讲表格甲，然后短暂补充，再讲表格乙，最后总结",
+        [
+            {"text": "先讲表格甲", "start": 0, "end": 3},
+            {"text": "然后短暂补充", "start": 3, "end": 6},
+            {"text": "再讲表格乙", "start": 6, "end": 9},
+            {"text": "最后总结", "start": 9, "end": 12},
+        ],
+        [
+            _cue("先讲表格甲", "先讲表格甲"),
+            _cue("再讲表格乙", "再讲表格乙"),
+        ],
+    )
+
+    assert result["segments"][0]["cues"] == [{
+        **_cue("先讲表格甲", "再讲表格乙"),
+        "start": 0,
+        "end": 9,
+        "image_path": str(tmp_path / "table.png"),
+        "page": 2,
+        "merged_cue_count": 2,
+    }]
+
+
+def test_same_visual_merge_bridges_segment_boundary() -> None:
+    cue = {
+        **_cue("开始"),
+        "image_path": "table.png",
+        "page": 2,
+    }
+    segments = [
+        {
+            "segment_index": 1,
+            "start_time": 0,
+            "duration": 6,
+            "cues": [{**cue, "start": 1, "end": 5}],
+        },
+        {
+            "segment_index": 2,
+            "start_time": 6,
+            "duration": 6,
+            "cues": [{**cue, "start": 2, "end": 5}],
+        },
+    ]
+
+    _merge_nearby_same_visual_cues(segments, max_gap_seconds=5)
+
+    assert [(item["start"], item["end"]) for item in segments[0]["cues"]] == [(1, 6)]
+    assert [(item["start"], item["end"]) for item in segments[1]["cues"]] == [(0, 5)]
+    assert segments[0]["cues"][0]["merged_cue_count"] == 2
+    assert segments[1]["cues"][0]["merged_cue_count"] == 2
+
+
+def test_same_visual_merge_keeps_long_gaps_separate() -> None:
+    cue = {
+        **_cue("开始"),
+        "image_path": "table.png",
+        "page": 2,
+    }
+    segments = [{
+        "segment_index": 1,
+        "start_time": 0,
+        "duration": 15,
+        "cues": [
+            {**cue, "start": 0, "end": 3},
+            {**cue, "start": 9, "end": 12},
+        ],
+    }]
+
+    _merge_nearby_same_visual_cues(segments, max_gap_seconds=5)
+
+    assert [(item["start"], item["end"]) for item in segments[0]["cues"]] == [
+        (0, 3),
+        (9, 12),
+    ]
+
+
+def test_same_visual_merge_does_not_project_single_cue_across_rounding_boundary() -> None:
+    cue = {
+        **_cue("开始"),
+        "image_path": "table.png",
+        "page": 2,
+        "start": 1,
+        "end": 6,
+    }
+    segments = [
+        {"segment_index": 1, "start_time": 0, "duration": 6, "cues": [cue]},
+        {"segment_index": 2, "start_time": 5.999, "duration": 6, "cues": []},
+    ]
+
+    _merge_nearby_same_visual_cues(segments, max_gap_seconds=5)
+
+    assert segments[0]["cues"] == [cue]
+    assert segments[1]["cues"] == []
 
 
 def test_visual_review_rejects_unknown_overlap_and_duplicate_segment() -> None:

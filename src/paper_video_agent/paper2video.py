@@ -1587,6 +1587,9 @@ def build_video(
         audio_timeline,
         visual_assets,
         paper_dir / "output" / "visual_timeline.json",
+        same_visual_merge_gap_seconds=float(
+            os.getenv("PAPER_VIDEO_VISUAL_MERGE_GAP_SECONDS", "5")
+        ),
     )
 
     # 生成srt字幕
