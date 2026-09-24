@@ -3,6 +3,27 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class PaperVisual(BaseModel):
+    """A figure, table, formula, or captioned code block extracted by MinerU."""
+
+    id: str = Field(min_length=1, description="稳定的视觉元素 ID")
+    type: Literal["image", "table", "formula", "code"] = Field(
+        description="视觉元素类型"
+    )
+    page: int = Field(ge=1, description="视觉元素所在的 PDF 页码")
+    caption: str = Field(default="", description="MinerU 提取的标题、脚注或公式内容")
+    asset_path: str | None = Field(
+        default=None,
+        description="相对于 output/mineru 的图片文件路径；没有独立图片时为空",
+    )
+    bbox: list[float] | None = Field(
+        default=None,
+        min_length=4,
+        max_length=4,
+        description="视觉元素在 MinerU 页面坐标中的边界框",
+    )
+
+
 class ScriptSegment(BaseModel):
     """A narration segment rendered against one PDF page."""
 
@@ -17,6 +38,14 @@ class ScriptSegment(BaseModel):
     text: str = Field(
         min_length=1,
         description="当前这一段的视频中文解说词",
+    )
+
+    visual_id: str | None = Field(
+        default=None,
+        description=(
+            "本段重点讲解的图、表、公式或代码视觉元素 ID；"
+            "没有明确视觉焦点时为空"
+        ),
     )
 
 
@@ -145,6 +174,11 @@ class PaperScript(BaseModel):
     chapters: list[VideoChapterScript] = Field(
         min_length=1,
         description="按视频播放顺序排列的视频章节",
+    )
+
+    visuals: list[PaperVisual] = Field(
+        default_factory=list,
+        description="MinerU 提取并可供口播段落引用的结构化视觉元素目录",
     )
 
 

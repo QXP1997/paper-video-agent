@@ -184,7 +184,8 @@ python -m paper_video_agent --version
 ├── images/                # PDF 页面图像
 ├── subtitles/             # 分段 SRT 字幕
 └── output/
-    ├── mineru_parse.json   # MinerU 分页解析结果与源 PDF 指纹缓存
+    ├── mineru/              # MinerU ZIP 解压后的完整原始结果（ZIP 本身不保留）
+    ├── mineru_parse.json   # MinerU 分页文本、图表公式目录与源 PDF 指纹缓存
     ├── segments/            # 分段视频
     ├── paper_script.json    # 叙事规划与未经后处理的原始口播稿
     ├── paper_script.cache.json # 脚本输入指纹，用于安全续跑
@@ -204,6 +205,10 @@ python -m paper_video_agent --version
 已有的中间产物会尽量被复用。论文内容、脚本提示词、脚本结构或模型配置变化时，论文脚本会
 自动失效并重新生成；TTS 和渲染配置不会影响论文脚本缓存。想从头生成时，请使用一个新的
 工作目录；删除已有产物前请先备份。
+
+`paper_script.json` 的 `visuals` 保留 MinerU 识别的图、表、公式和带标题代码块；
+当某段口播明确讲解其中一个元素时，`segment.visual_id` 会引用它。没有合适图表时该字段为
+`null`，不会为了填充而强行绑定。
 
 事实审核严格以每章规划中的 `source_pages` 为证据范围：审核模型会看到该章完整口播和这些
 页面的解析文本，不会搜索或猜测论文其他页面。指定页无法支持的说法会在

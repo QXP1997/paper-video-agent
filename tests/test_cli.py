@@ -337,7 +337,17 @@ def _paper_script() -> PaperScript:
         "chapters": [{
             "chapter_id": "chapter_01",
             "title": "章节1",
-            "segments": [{"page": 1, "text": "测试口播"}],
+            "segments": [{
+                "page": 1,
+                "text": "测试口播",
+                "visual_id": "page_001_image_01",
+            }],
+        }],
+        "visuals": [{
+            "id": "page_001_image_01",
+            "type": "image",
+            "page": 1,
+            "caption": "Figure 1",
         }],
     })
 
@@ -411,3 +421,4 @@ def test_reused_tts_refreshes_chapter_metadata(tmp_path: Path) -> None:
     assert manifest["segments"][0]["chapter_index"] == 1
     assert manifest["segments"][0]["chapter_count"] == 1
     assert manifest["segments"][0]["chapter_title"] == "章节1"
+    assert manifest["segments"][0]["visual_id"] == "page_001_image_01"

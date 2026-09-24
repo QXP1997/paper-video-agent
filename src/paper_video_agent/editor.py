@@ -99,6 +99,7 @@ editor_prompt = ChatPromptTemplate.from_messages([
 - 保留章节时，其 title 必须与 raw_script 对应章节一致；
 - 每个保留章节至少包含一个 segment；
 - segment.page 只能使用该章节原有 segment.page 或该章 source_pages 中的页码；
+- segment.visual_id 只能保留 raw_script.visuals 中存在且与 segment.page 同页的 ID；没有明确视觉焦点时为 null；
 - 页面只是画面选择。合并 segments 时选择其中最能代表当前内容的一页，不要为了切页而重复口播；
 - 不输出时间戳、时长、审核说明、Markdown 或任何额外字段。
 
@@ -193,6 +194,7 @@ def _normalize_edited_script(
         raise ValueError("编辑稿章节顺序与原始脚本不一致")
 
     normalized_chapters = []
+    visual_pages = {visual.id: visual.page for visual in raw_script.visuals}
     for edited_chapter in result.chapters:
         raw_chapter = raw_chapters_by_id[edited_chapter.chapter_id]
         chapter_plan = plans_by_id.get(edited_chapter.chapter_id)
@@ -214,6 +216,20 @@ def _normalize_edited_script(
                 f"编辑稿章节“{raw_chapter.title}”使用了不允许的页码: "
                 f"{invalid_pages}"
             )
+        invalid_visual_ids = sorted({
+            segment.visual_id
+            for segment in edited_chapter.segments
+            if segment.visual_id is not None
+            and (
+                segment.visual_id not in visual_pages
+                or visual_pages[segment.visual_id] != segment.page
+            )
+        })
+        if invalid_visual_ids:
+            raise ValueError(
+                f"编辑稿章节“{raw_chapter.title}”使用了无效视觉元素: "
+                f"{invalid_visual_ids}"
+            )
 
         normalized_chapters.append(edited_chapter.model_copy(update={
             "title": raw_chapter.title,
@@ -231,6 +247,7 @@ def _normalize_edited_script(
         title=raw_script.title,
         plan=edited_plan,
         chapters=normalized_chapters,
+        visuals=raw_script.visuals,
     )
 
 

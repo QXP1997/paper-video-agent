@@ -62,6 +62,7 @@ repair_prompt = ChatPromptTemplate.from_messages([
 - title 保持不变；
 - 每章至少一个 segment；
 - segment.page 只能使用候选稿已有页面，或原章节规划的 source_pages；
+- segment.visual_id 只能使用 candidate_script.visuals 中存在且与 segment.page 同页的 ID；没有明确视觉焦点时为 null；
 - 不输出解释、Markdown 或额外字段。
 """,
     ),
@@ -291,6 +292,7 @@ def validate_final_script(
     issues = []
     raw_chapters = {chapter.chapter_id: chapter for chapter in raw_script.chapters}
     raw_plans = {chapter.chapter_id: chapter for chapter in raw_script.plan.chapters}
+    visual_pages = {visual.id: visual.page for visual in raw_script.visuals}
     candidate_ids = [chapter.chapter_id for chapter in candidate.chapters]
     raw_ids = [chapter.chapter_id for chapter in raw_script.chapters]
     plan_ids = [chapter.chapter_id for chapter in candidate.plan.chapters]
@@ -361,6 +363,21 @@ def validate_final_script(
                     chapter_id=chapter.chapter_id,
                     segment_index=segment_index,
                     message=f"segment 使用了不允许的 PDF 页码 {segment.page}。",
+                ))
+
+            if segment.visual_id is not None and (
+                segment.visual_id not in visual_pages
+                or visual_pages[segment.visual_id] != segment.page
+            ):
+                issues.append(ScriptValidationIssue(
+                    code="invalid_visual_id",
+                    severity="high",
+                    chapter_id=chapter.chapter_id,
+                    segment_index=segment_index,
+                    message=(
+                        "segment 使用了不存在或不在当前背景页的视觉元素 "
+                        f"{segment.visual_id}。"
+                    ),
                 ))
 
             number_mentions = _number_mentions(segment.text)

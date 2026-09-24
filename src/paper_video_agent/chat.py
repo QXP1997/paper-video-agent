@@ -9,6 +9,7 @@ from langchain_deepseek import ChatDeepSeek
 from paper_video_agent.models import (
     PaperPlan,
     PaperScript,
+    PaperVisual,
     VideoChapterPlan,
     VideoChapterScript,
 )
@@ -46,7 +47,7 @@ _load_local_env()
 
 # Bump this when script-generation behavior changes without a corresponding
 # prompt or output-schema change (for example, normalization or validation).
-SCRIPT_GENERATION_VERSION = 1
+SCRIPT_GENERATION_VERSION = 2
 LLM_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
 LLM_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 LLM_TEMPERATURE = 0.3
@@ -161,9 +162,11 @@ previous_chapters 是已经录制、不可修改的全部前文：
 
 # 七、页面与口播内容的关系
 
-输入由多个 PDF 页面组成，每页包含 page 和 text。每个 segment 的 page 是这一段播放时的主要背景画面，不是口播事实的边界。
+输入由多个 PDF 页面组成，每页包含 page、text 和 visuals。visuals 是 MinerU 识别出的图、表、公式或带标题代码块，包含稳定 id、类型、caption、图片路径和页面位置。每个 segment 的 page 是这一段播放时的主要背景画面，不是口播事实的边界。
 
 - page 应选择最能承载当前主要内容的页面，例如核心示意图、流程图、表格、公式、实验图或相关正文所在页。
+- 当某个视觉元素能明显帮助解释当前主要内容时，将它的 id 原样填入 segment.visual_id，并让 segment.page 与该视觉元素的 page 一致；没有明确视觉焦点时 visual_id 必须为 null。
+- 不得编造 visual_id，也不要仅因为页面存在图表就强行引用。引用图表时应讲清它帮助说明的关系或证据，不要只念 caption 或整张表。
 - 口播可以综合 paper_content 中其他任意真实页面的信息，用来补充前因后果、定义、比较或证据；不要求每一句话都来自当前显示页。
 - 如果一个结论需要跨页理解，应在口播中自然整合，画面选择其中视觉上最能代表当前主要内容的一页。
 - 当讲解重点明显转移到另一页的图、表、公式或内容时，拆成新的 segment 并切换 page。
@@ -179,7 +182,7 @@ previous_chapters 是已经录制、不可修改的全部前文：
 当前调用只输出一个完整的 VideoChapterScript：
 
 - chapter_id 和 title 必须与 current_chapter 完全一致；
-- segments 按播放顺序包含 page 和完整中文口播 text；
+- segments 按播放顺序包含 page、完整中文口播 text，以及可选的 visual_id；
 - 只生成当前视频章节，不重写前文，不生成其他章节。
 
 结构化输出必须是严格合法、可直接解析的 JSON 参数。JSON 的字段名和字符串边界仍使用英文双引号；但在 title、text 等字符串正文中引用词语、概念或句子时，禁止直接使用未转义的英文双引号，统一改用中文引号“……”。如果正文确实必须包含英文双引号，必须写成转义形式 \\\"。输出前检查所有字符串正文中的英文双引号均已正确转义。
@@ -463,6 +466,7 @@ def generate_video_chapter(
     previous_chapters: list[VideoChapterScript],
     next_chapter: VideoChapterPlan | None,
     available_pages: set[int],
+    available_visuals: dict[str, int],
 ) -> VideoChapterScript:
     chapter_script = invoke_structured_with_retry(
         chain=_get_chapter_chain(),
@@ -484,6 +488,38 @@ def generate_video_chapter(
         },
         stage=f"视频章节“{current_chapter.title}”",
     )
+
+    invalid_visual_ids = sorted({
+        segment.visual_id
+        for segment in chapter_script.segments
+        if segment.visual_id is not None
+        and segment.visual_id not in available_visuals
+    })
+    if invalid_visual_ids:
+        print(
+            f"视频章节“{current_chapter.title}”忽略了不存在的视觉元素: "
+            f"{invalid_visual_ids}"
+        )
+
+    # A valid visual reference is more specific than the separately generated
+    # background page. Correct a page mismatch deterministically instead of
+    # discarding an otherwise useful chapter generation.
+    normalized_segments = [
+        segment.model_copy(update={
+            "page": available_visuals[segment.visual_id],
+        })
+        if segment.visual_id is not None
+        and segment.visual_id in available_visuals
+        and available_visuals[segment.visual_id] != segment.page
+        else segment.model_copy(update={"visual_id": None})
+        if segment.visual_id is not None
+        and segment.visual_id not in available_visuals
+        else segment
+        for segment in chapter_script.segments
+    ]
+    chapter_script = chapter_script.model_copy(update={
+        "segments": normalized_segments,
+    })
 
     invalid_pages = sorted({
         segment.page
@@ -509,17 +545,25 @@ def generate_paper_script(
     if not _pages:
         raise ValueError("论文页面不能为空")
 
+    normalized_pages = [{
+        "page": int(page["page"]),
+        "text": str(page.get("text", "")),
+        "visuals": list(page.get("visuals", [])),
+    } for page in _pages]
     paper_content = json.dumps(
-        [{
-            "page": page["page"],
-            "text": page["text"],
-        } for page in _pages],
+        normalized_pages,
         ensure_ascii=False,
     )
     available_pages = {
         int(page["page"])
         for page in _pages
     }
+    visuals = [
+        PaperVisual.model_validate(visual)
+        for page in normalized_pages
+        for visual in page["visuals"]
+    ]
+    available_visuals = {visual.id: visual.page for visual in visuals}
 
     print("正在规划视频章节...")
     video_plan = generate_video_plan(
@@ -556,6 +600,7 @@ def generate_paper_script(
             previous_chapters=generated_chapters,
             next_chapter=next_chapter,
             available_pages=available_pages,
+            available_visuals=available_visuals,
         )
         generated_chapters.append(chapter_script)
 
@@ -567,4 +612,5 @@ def generate_paper_script(
         title=video_plan.video_title,
         plan=video_plan,
         chapters=generated_chapters,
+        visuals=visuals,
     )

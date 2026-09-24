@@ -2,16 +2,18 @@ import hashlib
 import io
 import json
 import os
+import shutil
+import tempfile
 import time
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import httpx
 import pymupdf
 
 MINERU_API_BASE_URL = "https://mineru.net/api/v4"
-MINERU_PARSE_VERSION = 1
+MINERU_PARSE_VERSION = 3
 MINERU_MODEL_VERSION = "vlm"
 MINERU_LANGUAGE = "en"
 
@@ -103,8 +105,13 @@ class MinerUClient:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def parse_pdf(self, pdf_path: str | Path) -> list[dict[str, Any]]:
-        """Upload a PDF, wait for MinerU, and return its content-list records."""
+    def parse_pdf(
+        self,
+        pdf_path: str | Path,
+        *,
+        result_dir: str | Path | None = None,
+    ) -> list[dict[str, Any]]:
+        """Upload a PDF, retain its extracted result, and return content records."""
         pdf_path = Path(pdf_path)
         batch_id, upload_url = self._create_upload(pdf_path.name)
 
@@ -113,7 +120,10 @@ class MinerUClient:
         upload_response.raise_for_status()
 
         zip_bytes = self._poll_result(batch_id)
-        return _read_content_list(zip_bytes)
+        content_list = _read_content_list(zip_bytes)
+        if result_dir is not None:
+            _extract_mineru_result(zip_bytes, Path(result_dir))
+        return content_list
 
     def _create_upload(self, file_name: str) -> tuple[str, str]:
         response = self.client.post(
@@ -197,6 +207,83 @@ def _read_content_list(zip_bytes: bytes) -> list[dict[str, Any]]:
     return [item for item in content_list if isinstance(item, dict)]
 
 
+def _load_extracted_content_list(result_dir: Path) -> list[dict[str, Any]] | None:
+    """Load the legacy page-aware content list from an extracted MinerU result."""
+    if not result_dir.is_dir():
+        return None
+
+    candidates = [
+        path
+        for path in result_dir.rglob("*.json")
+        if path.name.lower().endswith("content_list.json")
+    ]
+    if not candidates:
+        return None
+
+    preferred = min(
+        candidates,
+        key=lambda path: (len(path.relative_to(result_dir).parts), len(str(path))),
+    )
+    try:
+        content_list = json.loads(preferred.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(content_list, list):
+        return None
+    return [item for item in content_list if isinstance(item, dict)]
+
+
+def _extract_mineru_result(zip_bytes: bytes, result_dir: Path) -> None:
+    """Extract a MinerU archive without retaining the downloaded ZIP file."""
+    result_dir = result_dir.resolve()
+    result_dir.parent.mkdir(parents=True, exist_ok=True)
+    temporary_dir = Path(
+        tempfile.mkdtemp(prefix=f".{result_dir.name}-", dir=result_dir.parent)
+    )
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            for member in archive.infolist():
+                # ZIP member names are POSIX-style, but also reject backslash-based
+                # traversal produced by non-conforming archive writers.
+                normalized_name = member.filename.replace("\\", "/")
+                archive_path = PurePosixPath(normalized_name)
+                parts = archive_path.parts
+                if (
+                    not parts
+                    or archive_path.is_absolute()
+                    or PureWindowsPath(normalized_name).drive
+                    or any(part in {"", ".", ".."} for part in parts)
+                ):
+                    raise MinerUError(f"MinerU 结果压缩包包含不安全路径: {member.filename}")
+
+                destination = temporary_dir.joinpath(*parts)
+                if member.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                    continue
+
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, destination.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+    except zipfile.BadZipFile as exc:
+        shutil.rmtree(temporary_dir, ignore_errors=True)
+        raise MinerUError("MinerU 返回的结果不是有效 ZIP 文件") from exc
+    except Exception:
+        shutil.rmtree(temporary_dir, ignore_errors=True)
+        raise
+
+    try:
+        if result_dir.exists():
+            if result_dir.is_dir():
+                shutil.rmtree(result_dir)
+            else:
+                result_dir.unlink()
+        temporary_dir.replace(result_dir)
+    except Exception:
+        shutil.rmtree(temporary_dir, ignore_errors=True)
+        raise
+
+
 def _as_text(value: object) -> str:
     if isinstance(value, str):
         return value.strip()
@@ -211,9 +298,37 @@ def _content_item_text(item: dict[str, Any]) -> str:
         fields = ("table_caption", "table_body", "table_footnote")
     elif item_type == "image":
         fields = ("image_caption", "image_footnote")
+    elif item_type == "code":
+        # Captioned code blocks can be important figures (as in the OpenHands
+        # paper). Skip long appendix listings that have no caption.
+        fields = ("code_caption", "code_body") if item.get("code_caption") else ()
+    elif item_type in {"equation", "formula"}:
+        fields = ("text", "latex", "equation", "content")
     else:
         fields = ("text",)
 
+    parts = [_as_text(item.get(field)) for field in fields]
+    return "\n".join(part for part in parts if part)
+
+
+def _visual_kind(item: dict[str, Any]) -> str | None:
+    item_type = item.get("type")
+    if item_type in {"image", "table"}:
+        return str(item_type)
+    if item_type in {"equation", "formula"}:
+        return "formula"
+    if item_type == "code" and item.get("code_caption"):
+        return "code"
+    return None
+
+
+def _visual_caption(item: dict[str, Any], kind: str) -> str:
+    fields = {
+        "image": ("image_caption", "image_footnote"),
+        "table": ("table_caption", "table_footnote"),
+        "code": ("code_caption",),
+        "formula": ("text", "latex", "equation", "content"),
+    }[kind]
     parts = [_as_text(item.get(field)) for field in fields]
     return "\n".join(part for part in parts if part)
 
@@ -223,6 +338,10 @@ def _to_page_texts(
     page_count: int,
 ) -> list[dict[str, Any]]:
     page_parts: dict[int, list[str]] = {page: [] for page in range(1, page_count + 1)}
+    page_visuals: dict[int, list[dict[str, Any]]] = {
+        page: [] for page in range(1, page_count + 1)
+    }
+    visual_counts: dict[tuple[int, str], int] = {}
     for item in content_list:
         page_index = item.get("page_idx")
         if not isinstance(page_index, int):
@@ -234,8 +353,35 @@ def _to_page_texts(
         if text:
             page_parts[page_number].append(text)
 
+        kind = _visual_kind(item)
+        if kind is None:
+            continue
+        count_key = (page_number, kind)
+        visual_counts[count_key] = visual_counts.get(count_key, 0) + 1
+        visual = {
+            "id": f"page_{page_number:03d}_{kind}_{visual_counts[count_key]:02d}",
+            "type": kind,
+            "page": page_number,
+            "caption": _visual_caption(item, kind),
+        }
+        asset_path = _as_text(item.get("img_path"))
+        if asset_path:
+            visual["asset_path"] = asset_path
+        bbox = item.get("bbox")
+        if (
+            isinstance(bbox, list)
+            and len(bbox) == 4
+            and all(isinstance(value, (int, float)) for value in bbox)
+        ):
+            visual["bbox"] = bbox
+        page_visuals[page_number].append(visual)
+
     return [
-        {"page": page, "text": "\n\n".join(page_parts[page])}
+        {
+            "page": page,
+            "text": "\n\n".join(page_parts[page]),
+            "visuals": page_visuals[page],
+        }
         for page in range(1, page_count + 1)
     ]
 
@@ -285,6 +431,7 @@ def pdf2text(
     pdf_path: str | Path,
     cache_path: str | Path | None = None,
     *,
+    mineru_result_dir: str | Path | None = None,
     mineru_client: MinerUClient | None = None,
 ) -> dict[str, Any]:
     pdf_path = Path(pdf_path)
@@ -296,17 +443,27 @@ def pdf2text(
 
     pdf_sha256 = _sha256_file(pdf_path)
     resolved_cache_path = Path(cache_path) if cache_path is not None else None
+    resolved_result_dir = Path(mineru_result_dir) if mineru_result_dir is not None else None
+    extracted_content_list = (
+        _load_extracted_content_list(resolved_result_dir)
+        if resolved_result_dir is not None
+        else None
+    )
     if resolved_cache_path is not None:
         cached = _load_cached_text(resolved_cache_path, pdf_sha256)
-        if cached is not None:
+        result_is_available = resolved_result_dir is None or extracted_content_list is not None
+        if cached is not None and result_is_available:
             print(f"复用已有 MinerU 解析结果: {resolved_cache_path}")
             return cached
 
-    if mineru_client is None:
+    if extracted_content_list is not None:
+        print(f"从已解压的 MinerU 结果重建分页缓存: {resolved_result_dir}")
+        content_list = extracted_content_list
+    elif mineru_client is None:
         with MinerUClient() as client:
-            content_list = client.parse_pdf(pdf_path)
+            content_list = client.parse_pdf(pdf_path, result_dir=resolved_result_dir)
     else:
-        content_list = mineru_client.parse_pdf(pdf_path)
+        content_list = mineru_client.parse_pdf(pdf_path, result_dir=resolved_result_dir)
 
     text_data = {
         "file_name": pdf_path.name,
@@ -353,7 +510,13 @@ def parse_pdf(
 ) -> tuple[dict[str, Any], dict[int, Path]]:
     """Extract page text with MinerU and render each complete PDF page."""
     output_dir = Path(output_dir)
-    cache_path = output_dir.parent / "output" / "mineru_parse.json"
-    text_data = pdf2text(pdf_path, cache_path, mineru_client=mineru_client)
+    mineru_output_dir = output_dir.parent / "output"
+    cache_path = mineru_output_dir / "mineru_parse.json"
+    text_data = pdf2text(
+        pdf_path,
+        cache_path,
+        mineru_result_dir=mineru_output_dir / "mineru",
+        mineru_client=mineru_client,
+    )
     page_images = pdf2images(pdf_path, output_dir, zoom)
     return text_data, page_images

@@ -168,8 +168,15 @@ def select_source_page_content(
     """Return only requested PDF pages, preserving source_pages order."""
     page_by_number = {
         int(page["page"]): {
-            "page": int(page["page"]),
-            "text": str(page.get("text", "")),
+            **{
+                "page": int(page["page"]),
+                "text": str(page.get("text", "")),
+            },
+            **(
+                {"visuals": list(page.get("visuals", []))}
+                if "visuals" in page
+                else {}
+            ),
         }
         for page in pages
     }
