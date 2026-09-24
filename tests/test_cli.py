@@ -212,6 +212,46 @@ def test_segment_video_uses_only_full_pdf_page(
     assert str((tmp_path / "page_001.png").resolve()) in command
 
 
+def test_segment_video_switches_to_focus_asset_and_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+    focus_path = tmp_path / "figure.png"
+    focus_path.write_bytes(b"image")
+
+    def capture_command(command: list[str], cwd: Path | None = None) -> None:
+        captured["command"] = command
+        captured["cwd"] = cwd
+
+    monkeypatch.setattr("paper_video_agent.paper2video.run_cmd", capture_command)
+    build_segment_video(
+        image_path=tmp_path / "page_001.png",
+        audio_path=tmp_path / "segment_001.mp3",
+        subtitle_path=tmp_path / "segment_001.srt",
+        output_path=tmp_path / "segment_001.mp4",
+        chapters=[{"index": 1, "title": "开场"}],
+        current_chapter_index=1,
+        video_elapsed=0,
+        segment_duration=8,
+        video_duration=8,
+        focus_cues=[{
+            "visual_id": "page_001_image_01",
+            "start": 2,
+            "end": 6,
+            "image_path": str(focus_path),
+        }],
+    )
+
+    command = captured["command"]
+    assert command.count("-i") == 3
+    assert "-filter_complex" in command
+    graph = command[command.index("-filter_complex") + 1]
+    assert "overlay=0:0" in graph
+    assert "gte(t,2.000)*lt(t,6.000)" in graph
+    assert str(focus_path.resolve()) in command
+
+
 def test_segment_videos_resume_after_partial_ffmpeg_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

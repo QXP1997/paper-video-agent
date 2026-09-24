@@ -186,6 +186,7 @@ python -m paper_video_agent --version
 └── output/
     ├── mineru/              # MinerU ZIP 解压后的完整原始结果（ZIP 本身不保留）
     ├── mineru_parse.json   # MinerU 分页文本、图表公式目录与源 PDF 指纹缓存
+    ├── focus_assets/        # 公式、代码等 bbox 元素的局部裁剪素材
     ├── segments/            # 分段视频
     ├── paper_script.json    # 叙事规划与未经后处理的原始口播稿
     ├── paper_script.cache.json # 脚本输入指纹，用于安全续跑
@@ -196,6 +197,9 @@ python -m paper_video_agent --version
     ├── script_validation.json # 最终确定性校验与返修记录
     ├── paper_script.final.json # 校验通过、实际用于视频的最终脚本
     ├── paper_script.final.cache.json # 最终校验输入指纹，用于安全续跑
+    ├── visual_review.json  # 独立视觉脚本审核（口播原文锚点）
+    ├── visual_review_cache/ # 按章节缓存的视觉审核结果
+    ├── visual_timeline.json # 与 TTS 词级时间戳对齐后的切换时间轴
     ├── social_metadata.json # 结构化标题、简介和标签（运行发布文案命令后生成）
     ├── social_metadata.md   # 可直接编辑的发布文案（运行发布文案命令后生成）
     ├── final.mp4            # 高质量原片
@@ -209,6 +213,11 @@ python -m paper_video_agent --version
 `paper_script.json` 的 `visuals` 保留 MinerU 识别的图、表、公式和带标题代码块；
 当某段口播明确讲解其中一个元素时，`segment.visual_id` 会引用它。没有合适图表时该字段为
 `null`，不会为了填充而强行绑定。
+
+最终口播通过后，独立的视觉脚本审核节点会再根据口播、caption 和页面证据复核
+是否真的需要聚焦。默认保持 PDF 全页；只在讲解具体图、表、公式或代码时，按口播
+原文锚点临时切换到 MinerU 素材，讲解结束后自动切回全页。时间锚点无法与 TTS 可靠
+对齐、区间重叠或聚焦不足两秒时，会安全降级为 PDF 全页。
 
 事实审核严格以每章规划中的 `source_pages` 为证据范围：审核模型会看到该章完整口播和这些
 页面的解析文本，不会搜索或猜测论文其他页面。指定页无法支持的说法会在

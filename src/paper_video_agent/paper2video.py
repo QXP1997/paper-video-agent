@@ -35,9 +35,14 @@ from paper_video_agent.finalizer import (
 from paper_video_agent.models import PaperScript
 from paper_video_agent.pdf_util import parse_pdf
 from paper_video_agent.tts import generate_tts, get_tts_config
+from paper_video_agent.visual import (
+    align_visual_review,
+    generate_visual_review,
+    prepare_visual_assets,
+)
 
 SCRIPT_CACHE_VERSION = 2
-SEGMENT_VIDEO_CACHE_VERSION = 1
+SEGMENT_VIDEO_CACHE_VERSION = 2
 SEGMENT_VIDEO_RENDER_SETTINGS = {
     "width": 1080,
     "height": 1920,
@@ -48,6 +53,9 @@ SEGMENT_VIDEO_RENDER_SETTINGS = {
     "pixel_format": "yuv420p",
     "audio_codec": "aac",
     "audio_bitrate": "192k",
+    "focus_horizontal_margin": 32,
+    "focus_top_margin": 88,
+    "focus_bottom_margin": 280,
 }
 
 
@@ -899,6 +907,7 @@ def build_segment_video(
     width: int = 1080,
     height: int = 1920,
     fps: int = 30,
+    focus_cues: list[dict] | None = None,
 ):
     output_path.parent.mkdir(
         parents=True,
@@ -954,7 +963,55 @@ def build_segment_video(
         # TTS
         "-i", str(audio_path.resolve()),
     ]
-    cmd.extend(["-vf", vf, "-map", "0:v:0", "-map", "1:a:0"])
+    if focus_cues:
+        # Each focus image becomes a complete white-backed frame. Navigation
+        # and subtitles are rendered once after all timed switches.
+        focus_margin_x = int(
+            SEGMENT_VIDEO_RENDER_SETTINGS["focus_horizontal_margin"]
+        )
+        focus_top = int(SEGMENT_VIDEO_RENDER_SETTINGS["focus_top_margin"])
+        focus_bottom = int(
+            SEGMENT_VIDEO_RENDER_SETTINGS["focus_bottom_margin"]
+        )
+        content_height = height - focus_top - focus_bottom
+        graph = [f"[0:v]{','.join(filters[:2])},setsar=1[page]"]
+        previous = "page"
+        for index, cue in enumerate(focus_cues):
+            focus_path = Path(cue["image_path"])
+            if not focus_path.is_file():
+                raise FileNotFoundError(f"视觉聚焦素材不存在: {focus_path}")
+            start = float(cue["start"])
+            end = float(cue["end"])
+            if not 0 <= start < end <= segment_duration + 0.001:
+                raise ValueError(f"视觉聚焦时间范围无效: {start}, {end}")
+            cmd.extend([
+                "-loop", "1",
+                "-framerate", str(fps),
+                "-i", str(focus_path.resolve()),
+            ])
+            graph.append(
+                f"[{index + 2}:v]scale={width - focus_margin_x * 2}:"
+                f"{content_height}:"
+                "force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:"
+                f"{focus_top}+({content_height}-ih)/2:white,"
+                f"setsar=1[asset{index}]"
+            )
+            label = f"view{index}"
+            graph.append(
+                f"[{previous}][asset{index}]overlay=0:0:"
+                f"enable='gte(t,{start:.3f})*lt(t,{end:.3f})'[{label}]"
+            )
+            previous = label
+        graph.append(f"[{previous}]{','.join(filters[2:])}[video]")
+        cmd.extend([
+            "-filter_complex_threads", "1",
+            "-filter_complex", ";".join(graph),
+            "-map", "[video]",
+            "-map", "1:a:0",
+        ])
+    else:
+        cmd.extend(["-vf", vf, "-map", "0:v:0", "-map", "1:a:0"])
     cmd.extend([
         "-r", str(fps),
 
@@ -1010,6 +1067,7 @@ def build_segment_video_cache_metadata(
     video_elapsed: float,
     segment_duration: float,
     video_duration: float,
+    focus_cues: list[dict] | None = None,
 ) -> dict:
     """Fingerprint every input that can affect a rendered segment."""
     inputs = {
@@ -1021,6 +1079,13 @@ def build_segment_video_cache_metadata(
         "video_elapsed": video_elapsed,
         "segment_duration": segment_duration,
         "video_duration": video_duration,
+        "focus_cues": [
+            {
+                **cue,
+                "image_sha256": _sha256_file(Path(cue["image_path"])),
+            }
+            for cue in (focus_cues or [])
+        ],
         "render_settings": SEGMENT_VIDEO_RENDER_SETTINGS,
     }
     return {
@@ -1058,6 +1123,7 @@ def build_all_segment_videos(
     output_dir: str | Path,
     video_concurrency: int = 2,
     segment_indices: list[int] | None = None,
+    visual_timeline: dict | None = None,
 ) -> list[Path]:
 
     manifest_path = Path(manifest_path)
@@ -1072,6 +1138,11 @@ def build_all_segment_videos(
     )
 
     manifest = load_audio_timeline(manifest_path, audio_dir)
+    visual_by_index = {
+        int(item["segment_index"]): item.get("cues", [])
+        for item in (visual_timeline or {}).get("segments", [])
+    }
+
     def build_one(segment: dict) -> Path:
         index = segment["index"]
         page = segment["page"]
@@ -1122,6 +1193,7 @@ def build_all_segment_videos(
             video_elapsed=float(segment["start_time"]),
             segment_duration=float(segment["duration"]),
             video_duration=float(manifest["duration"]),
+            focus_cues=visual_by_index.get(index, []),
         )
         if is_reusable_segment_video(video_path, cache_path, cache_metadata):
             print(
@@ -1149,6 +1221,7 @@ def build_all_segment_videos(
                 video_elapsed=float(segment["start_time"]),
                 segment_duration=float(segment["duration"]),
                 video_duration=float(manifest["duration"]),
+                focus_cues=visual_by_index.get(index, []),
             )
             temporary_video_path.replace(video_path)
             cache_metadata["output"] = {"size": video_path.stat().st_size}
@@ -1475,6 +1548,23 @@ def build_video(
     )
     script = final_script
 
+    # Independently review when a visual should replace the full PDF page.
+    # MinerU images are used directly; bbox-only formula/code elements are
+    # rendered from the source PDF into stable local focus assets.
+    visual_assets = prepare_visual_assets(
+        script,
+        mineru_dir=paper_dir / "output" / "mineru",
+        pdf_path=pdf_path,
+        output_dir=paper_dir / "output" / "focus_assets",
+    )
+    visual_review = generate_visual_review(
+        script,
+        pages["pages"],
+        visual_assets,
+        paper_dir / "output" / "visual_review.json",
+        before_model_call=require_deepseek_api_key,
+    )
+
     # 保存segment视频片段
     tts_concurrency = max(
         1,
@@ -1486,6 +1576,17 @@ def build_video(
             paper_dir / "audio",
             tts_concurrency=tts_concurrency,
         )
+    )
+
+    audio_timeline = load_audio_timeline(
+        paper_dir / "audio" / "audio_manifest.json",
+        paper_dir / "audio",
+    )
+    visual_timeline = align_visual_review(
+        visual_review,
+        audio_timeline,
+        visual_assets,
+        paper_dir / "output" / "visual_timeline.json",
     )
 
     # 生成srt字幕
@@ -1503,6 +1604,7 @@ def build_video(
         subtitle_dir=paper_dir / "subtitles",
         output_dir=Path(paper_dir) / "output" / ("preview_segments" if preview_segments else "segments"),
         segment_indices=preview_segments,
+        visual_timeline=visual_timeline,
         video_concurrency=max(
             1,
             int(os.getenv("PAPER_VIDEO_VIDEO_CONCURRENCY", "3")),

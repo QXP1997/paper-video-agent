@@ -24,6 +24,40 @@ class PaperVisual(BaseModel):
     )
 
 
+class FocusCue(BaseModel):
+    """A narration-anchored interval that temporarily shows one visual."""
+
+    visual_id: str = Field(
+        min_length=1,
+        description="paper_script.visuals 中已有的视觉元素 ID",
+    )
+    start_quote: str = Field(
+        min_length=1,
+        description="开始聚焦时对应的连续口播原文，且在当前 segment 中唯一",
+    )
+    end_quote: str = Field(
+        default="",
+        description="恢复论文全页时对应的连续口播原文；空字符串表示保持到段末",
+    )
+    reason: str = Field(
+        min_length=1,
+        description="该视觉元素如何帮助理解当前口播",
+    )
+
+
+class SegmentVisualReview(BaseModel):
+    """Visual-focus decisions for one globally numbered narration segment."""
+
+    segment_index: int = Field(ge=1, description="输入中的全局 segment 编号")
+    cues: list[FocusCue] = Field(default_factory=list, max_length=2)
+
+
+class ChapterVisualReview(BaseModel):
+    """Independent visual review result for one narration chapter."""
+
+    segments: list[SegmentVisualReview] = Field(default_factory=list)
+
+
 class ScriptSegment(BaseModel):
     """A narration segment rendered against one PDF page."""
 
