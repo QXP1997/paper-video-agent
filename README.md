@@ -309,6 +309,7 @@ Windows 会自动尝试微软雅黑。macOS/Linux 建议安装 Noto Sans CJK，�
 
 ```text
 src/
+├── qharness/              # 独立的 Coding Agent Harness 子项目，保留自己的包、测试和 Git 历史
 ├── research_agent_core/   # Agent 通用基础设施：文档解析、缓存、环境配置和提示词序列化
 │   └── document/          # 共享 PDF/MinerU 解析、视觉元素提取、解析缓存和整页渲染
 ├── research_video_core/   # 视频通用能力：TTS、字幕切分、SRT、音频与视觉时间轴
@@ -318,6 +319,16 @@ src/
 `paper_video_agent` 的旧导入路径继续保留兼容；后续论文总结、论文对比等 Agent 可以直接复用公共
 PDF 解析结果，技术网页解说等 Agent 也可以复用缓存与视频能力，只实现自己的内容采集、证据模型
 和讲稿规划。共享模块不应反向依赖具体 Agent。
+
+QHarness 作为仓库内的独立 Python 子项目维护。需要开发或运行 Agent Loop 时，在同一虚拟环境中
+额外执行：
+
+```bash
+python -m pip install -e ./src/qharness
+```
+
+根项目不会复制 QHarness 的运行时实现，也不会把它的嵌套源码打进 `paper-video-agent` 包；后续
+Presentation Agent 通过公开的 `qharness` 包接口接入循环、工具、恢复和验证能力。
 
 ## 开发
 

@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- 将 QHarness 作为 `src/qharness` 下的独立子项目迁入工作台，并保留原仓库的完整 Git 提交链、
+  独立打包配置、测试、文档和运行时资源。
+
 ### Changed
 
 - 顶层项目更名为 Research Agent Workbench；Paper Video Agent 作为首个独立 Agent 保留，

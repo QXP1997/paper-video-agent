@@ -165,7 +165,7 @@ Planner、Stage Planner、Actor 和 Judge 默认复用一个 ModelBackend，通�
 
 主要位置：`evals/`、`examples/`、`config/loop.example.toml`、`README.md` 和相关文档。
 
-2026-09-16：评测运行器、三类调度对照、八组策略配置、独立评分和指标已接入；全量 201 项离线测试通过。退出 360 后 SRT 预检和固定沙箱命令均通过，固定 Todo 开发集已完成 6 项：4 项独立验收通过，跨模块和长任务进入 WAITING；Explicit 在 all 策略下通过，base 策略仍有规划协议失败。真实规划稳定性和策略对照仍在进行，尚不选择生产 Profile。详细核对见[第八批验收记录](./Agent-Loop第八批验收记录.md)；其他勾选项仍未完成。
+2026-09-16：评测运行器、三类调度对照、八组策略配置、独立评分和指标已接入；全量 201 项离线测试通过。退出 360 后 SRT 预检和固定沙箱命令均通过，固定 Todo 开发集 4/6 通过；`all` 策略开发集 3/6 通过，失败均进入受控 WAITING（Cross-module 规划耗尽、Long-running 工具预算耗尽、Steering 规划耗尽）；regression 的 Explicit、Environment `all` 为 2/2。Explicit 的 base 仍有规划协议失败。真实规划稳定性和策略对照仍在进行，尚不选择生产 Profile。详细核对见[第八批验收记录](./Agent-Loop第八批验收记录.md)；其他勾选项仍未完成。
 
 验收出口：全部必需协议、推理和故障用例通过；有真实任务结果支持选定配置。成功率与延迟门槛基于测量设定，不先编造数值；有限试验中的零故障不作为绝对可靠性保证。
 
