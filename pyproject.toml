@@ -44,12 +44,19 @@ dev = [
 [project.scripts]
 paper-video = "paper_video_agent.paper2video:main"
 paper-video-metadata = "paper_video_agent.social_metadata:main"
+research-deck = "research_presentation_core.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+presentation_agent = [
+    "skills/create-research-deck/SKILL.md",
+    "skills/create-research-deck/agents/openai.yaml",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
