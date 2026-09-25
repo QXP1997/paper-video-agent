@@ -1,6 +1,5 @@
 """Independent visual-script review and word-timed focus switches."""
 
-import hashlib
 import json
 import unicodedata
 from collections.abc import Callable
@@ -20,6 +19,18 @@ from paper_video_agent.chat import (
     invoke_structured_with_retry,
 )
 from paper_video_agent.models import ChapterVisualReview, PaperScript
+from research_agent_core.artifacts import (
+    canonical_sha256,
+)
+from research_agent_core.artifacts import (
+    sha256_file as _sha256_file,
+)
+from research_agent_core.artifacts import (
+    write_json_atomic as _save_json_atomic,
+)
+from research_video_core.timeline import (
+    merge_nearby_same_visual_cues as _merge_nearby_same_visual_cues,
+)
 
 VISUAL_REVIEW_VERSION = 1
 MIN_FOCUS_SECONDS = 2.0
@@ -82,24 +93,6 @@ def _cue_span(text: str, cue: dict) -> tuple[int, int]:
     if end < start_end:
         raise ValueError("视觉结束锚点在开始锚点之前")
     return start, end
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _save_json_atomic(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(path.suffix + ".tmp")
-    temporary_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary_path.replace(path)
 
 
 def _resolve_mineru_asset(mineru_dir: Path, relative_path: str) -> Path:
@@ -345,17 +338,10 @@ def generate_visual_review(
             "visuals": catalog,
         }
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        fingerprint = hashlib.sha256(
-            json.dumps(
-                {
-                    "generation": _review_generation_material(),
-                    "payload": payload,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
+        fingerprint = canonical_sha256({
+            "generation": _review_generation_material(),
+            "payload": payload,
+        })
         cache_path = (
             output_path.parent
             / "visual_review_cache"
@@ -454,77 +440,6 @@ def generate_visual_review(
 
     _save_json_atomic(output_path, result)
     return result
-
-
-def _merge_nearby_same_visual_cues(
-    segments: list[dict],
-    max_gap_seconds: float,
-) -> None:
-    """Keep the same visual on screen across short gaps between adjacent cues."""
-    if max_gap_seconds < 0:
-        raise ValueError("相同视觉合并间隔不能小于零")
-
-    cue_ranges = []
-    for segment in segments:
-        segment_start = float(segment.get("start_time", 0))
-        for cue in segment.get("cues", []):
-            cue_ranges.append({
-                "start": segment_start + float(cue["start"]),
-                "end": segment_start + float(cue["end"]),
-                "cue": cue,
-                "segment": segment,
-            })
-    cue_ranges.sort(key=lambda item: (item["start"], item["end"]))
-
-    groups = []
-    for cue_range in cue_ranges:
-        if (
-            groups
-            and cue_range["cue"]["visual_id"] == groups[-1]["cue"]["visual_id"]
-            and cue_range["start"] - groups[-1]["end"] <= max_gap_seconds
-        ):
-            groups[-1]["end"] = max(groups[-1]["end"], cue_range["end"])
-            groups[-1]["count"] += 1
-            groups[-1]["end_quote"] = cue_range["cue"].get("end_quote", "")
-        else:
-            groups.append({
-                **cue_range,
-                "count": 1,
-                "end_quote": cue_range["cue"].get("end_quote", ""),
-            })
-
-    for segment in segments:
-        segment["cues"] = []
-
-    for group in groups:
-        if group["count"] == 1:
-            group["segment"]["cues"].append(group["cue"])
-            continue
-
-        for segment in segments:
-            segment_start = float(segment.get("start_time", 0))
-            segment_end = segment_start + float(segment["duration"])
-            overlap_start = max(group["start"], segment_start)
-            overlap_end = min(group["end"], segment_end)
-            if overlap_end <= overlap_start:
-                continue
-
-            local_start = round(overlap_start - segment_start, 3)
-            local_end = round(overlap_end - segment_start, 3)
-            if local_end <= local_start:
-                continue
-
-            cue = {
-                **group["cue"],
-                "start": local_start,
-                "end": local_end,
-            }
-            cue["end_quote"] = group["end_quote"]
-            cue["merged_cue_count"] = group["count"]
-            segment["cues"].append(cue)
-
-    for segment in segments:
-        segment["cues"].sort(key=lambda cue: (cue["start"], cue["end"]))
 
 
 def align_visual_review(

@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import os
@@ -12,6 +11,9 @@ from typing import Any
 import httpx
 import pymupdf
 
+from research_agent_core.artifacts import sha256_file as _sha256_file
+from research_agent_core.env import load_local_env as _load_local_env
+
 MINERU_API_BASE_URL = "https://mineru.net/api/v4"
 MINERU_PARSE_VERSION = 3
 MINERU_MODEL_VERSION = "vlm"
@@ -22,39 +24,7 @@ class MinerUError(RuntimeError):
     """Raised when MinerU cannot parse a PDF."""
 
 
-def _load_local_env() -> None:
-    """Load a local .env without overriding explicitly configured values."""
-    candidates = [
-        Path.cwd() / ".env",
-        Path(__file__).resolve().parents[2] / ".env",
-    ]
-    env_path = next((path for path in candidates if path.is_file()), None)
-    if env_path is None:
-        return
-
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        if key:
-            os.environ.setdefault(key, value)
-
-
 _load_local_env()
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _mineru_error_message(result: object, fallback: str) -> str:

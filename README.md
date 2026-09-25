@@ -302,6 +302,21 @@ python -m paper_video_agent --version
 
 Windows 会自动尝试微软雅黑。macOS/Linux 建议安装 Noto Sans CJK，并按实际字体名称或路径配置。
 
+## 代码结构与复用原则
+
+项目按“领域 Agent + 共享能力”组织，新 Agent 应优先组合共享模块，不重复实现缓存、配音、字幕和
+时间轴逻辑：
+
+```text
+src/
+├── research_agent_core/   # Agent 通用基础设施：缓存指纹、原子写入、环境配置、提示词序列化
+├── research_video_core/   # 视频通用能力：TTS、字幕切分、SRT、音频与视觉时间轴
+└── paper_video_agent/     # 论文领域逻辑：MinerU/PDF、论文规划、事实审核、视觉素材与流水线
+```
+
+`paper_video_agent` 的旧导入路径继续保留兼容；后续技术网页解说等 Agent 可以直接依赖两个共享层，
+只实现自己的内容采集、证据模型和讲稿规划。共享模块不应反向依赖具体 Agent。
+
 ## 开发
 
 ```bash

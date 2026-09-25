@@ -1,7 +1,5 @@
 import argparse
 import asyncio
-import copy
-import hashlib
 import json
 import math
 import os
@@ -40,6 +38,30 @@ from paper_video_agent.visual import (
     generate_visual_review,
     prepare_visual_assets,
 )
+from research_agent_core.artifacts import (
+    canonical_sha256 as _canonical_sha256,
+)
+from research_agent_core.artifacts import (
+    sha256_file as _sha256_file,
+)
+from research_agent_core.artifacts import (
+    write_json_atomic as _write_json_atomic,
+)
+from research_video_core.subtitles import (
+    build_subtitles,
+    format_srt_time,
+    generate_segment_srts,
+    write_segment_srt,
+)
+from research_video_core.timeline import enrich_manifest_timeline
+
+__all__ = [
+    "build_subtitles",
+    "enrich_manifest_timeline",
+    "format_srt_time",
+    "generate_segment_srts",
+    "write_segment_srt",
+]
 
 SCRIPT_CACHE_VERSION = 2
 SEGMENT_VIDEO_CACHE_VERSION = 2
@@ -71,59 +93,17 @@ def require_deepseek_api_key(stage: str) -> None:
         )
 
 
-def _write_json_atomic(output_path: Path, data: dict) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    temporary_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary_path.replace(output_path)
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _canonical_sha256(data: object) -> str:
-    serialized = json.dumps(
-        data,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
 def build_script_cache_metadata(pdf_path: str | Path) -> dict:
     """Describe only the inputs that can change ``paper_script.json``."""
     pdf_path = Path(pdf_path)
     generation_material = script_generation_cache_material()
-    generation_serialized = json.dumps(
-        generation_material,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
     inputs = {
         "pdf_sha256": _sha256_file(pdf_path),
-        "script_generation_sha256": hashlib.sha256(
-            generation_serialized.encode("utf-8")
-        ).hexdigest(),
+        "script_generation_sha256": _canonical_sha256(generation_material),
     }
-    serialized = json.dumps(
-        inputs,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
     return {
         "version": SCRIPT_CACHE_VERSION,
-        "fingerprint": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+        "fingerprint": _canonical_sha256(inputs),
         "inputs": inputs,
     }
 
@@ -360,379 +340,6 @@ async def generate_script_audio(
 
     return manifest
 
-
-def enrich_manifest_timeline(manifest: dict) -> dict:
-    """Add timeline fields used by the animated chapter progress bar.
-
-    Older manifests did not contain durations, so derive them from the final
-    word timestamp. This keeps existing TTS output reusable when the video
-    renderer changes.
-    """
-    chapters_by_index = {
-        int(chapter["index"]): chapter
-        for chapter in manifest.get("chapters", [])
-    }
-    chapter_elapsed: dict[int, float] = {
-        chapter_index: 0.0
-        for chapter_index in chapters_by_index
-    }
-    total_elapsed = 0.0
-
-    for segment in manifest.get("segments", []):
-        words = segment.get("words") or []
-        inferred_duration = (
-            float(words[-1].get("end", 0.0))
-            if words
-            else 0.0
-        )
-        duration = max(
-            0.001,
-            float(segment.get("duration") or inferred_duration),
-        )
-        chapter_index = int(segment["chapter_index"])
-        elapsed_in_chapter = chapter_elapsed.get(chapter_index, 0.0)
-
-        segment["duration"] = round(duration, 3)
-        segment["start_time"] = round(total_elapsed, 3)
-        segment["chapter_elapsed"] = round(elapsed_in_chapter, 3)
-
-        total_elapsed += duration
-        chapter_elapsed[chapter_index] = elapsed_in_chapter + duration
-
-    chapter_start = 0.0
-    for chapter in manifest.get("chapters", []):
-        chapter_index = int(chapter["index"])
-        duration = chapter_elapsed.get(chapter_index, 0.0)
-        chapter["start_time"] = round(chapter_start, 3)
-        chapter["duration"] = round(duration, 3)
-        chapter["end_time"] = round(chapter_start + duration, 3)
-        chapter_start += duration
-
-    manifest["duration"] = round(total_elapsed, 3)
-    return manifest
-
-#########################生产srt字幕##############################
-PUNCTUATIONS = "，。！？；：,.!?;:"
-
-def format_srt_time(seconds: float) -> str:
-    ms = round(seconds * 1000)
-
-    h = ms // 3_600_000
-    ms %= 3_600_000
-
-    m = ms // 60_000
-    ms %= 60_000
-
-    s = ms // 1000
-    ms %= 1000
-
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
-
-def _words_with_spaced_punctuation(
-    words: list[dict],
-    source_text: str | None,
-) -> list[dict]:
-    """Replace source punctuation with visual spaces in subtitle words."""
-    if not source_text:
-        return words
-
-    punctuation = set(PUNCTUATIONS + "、，。！？；：‘’“”《》（）【】—…·-–—/")
-    source_cursor = 0
-    spaced_words = []
-
-    for word in words:
-        token = str(word.get("text", ""))
-        if not token:
-            continue
-
-        found_at = source_text.find(token, source_cursor)
-        if found_at < 0:
-            # TTS occasionally normalizes a token (for example a dash or a
-            # version suffix). Keep the timing, but do not invent a gap.
-            gap = ""
-        else:
-            gap = source_text[source_cursor:found_at]
-            source_cursor = found_at + len(token)
-
-        needs_space = any(
-            char in punctuation or char.isspace()
-            for char in gap
-        )
-        spaced_word = copy.copy(word)
-        spaced_word["text"] = (
-            (" " if needs_space else "")
-            + token
-        )
-        spaced_words.append(spaced_word)
-
-    return spaced_words
-
-
-def build_subtitles(
-    words: list[dict],
-    source_text: str | None = None,
-    max_chars: int = 18,
-    min_chars: int = 8,
-    max_lines: int = 2,
-    short_tail_chars: int = 4,
-) -> list[dict]:
-    """
-    根据 WordBoundary 生成字幕段。
-
-    规则：
-    1. 每行尽量不超过 max_chars，单条字幕最多 max_lines 行
-    2. 达到 min_chars 后，遇到标点优先切
-    3. 由于时间直接使用真实 WordBoundary，短尾词（例如单独的“它”）
-       会尽量并入下一条字幕，避免上一条字幕只剩一个语义上属于下一句的词
-    """
-
-    words = _words_with_spaced_punctuation(words, source_text)
-    subtitles = []
-    max_lines = max(1, int(max_lines))
-    max_chars = max(1, int(max_chars))
-    max_total_chars = max_chars * max_lines
-
-    current_words = []
-    current_text = ""
-
-    def flush():
-        nonlocal current_words, current_text
-
-        if not current_words:
-            return
-
-        subtitles.append({
-            "text": current_text.strip(),
-            "start": current_words[0]["start"],
-            "end": current_words[-1]["end"],
-            "_words": current_words.copy(),
-        })
-
-        current_words = []
-        current_text = ""
-
-    for word_index, word in enumerate(words):
-        text = word["text"]
-
-        if not text:
-            continue
-
-        joins_identifier = (
-            bool(current_text)
-            and current_text[-1].isascii()
-            and current_text[-1].isalnum()
-            and text[0].isascii()
-            and text[0].isalnum()
-        )
-        decimal_identifier_continues = (
-            bool(current_text)
-            and current_text.endswith(".")
-            and current_text[-2:-1].isdigit()
-            and text[0].isdigit()
-        )
-
-        # 加上当前 word 会超长，先把上一条字幕提交。英文数字组成的
-        # 连续标识符允许略微超长，避免把 pass3、GPT5 等拆成两条。
-        if (
-            current_words
-            and len(current_text) + len(text) > max_total_chars
-            and not joins_identifier
-            and not decimal_identifier_continues
-        ):
-            flush()
-
-        current_words.append(word)
-        current_text += text
-
-        next_text = (
-            str(words[word_index + 1].get("text", ""))
-            if word_index + 1 < len(words)
-            else ""
-        )
-        normalized_text = text.lstrip()
-        decimal_continues = (
-            normalized_text.endswith(".")
-            and normalized_text[:-1].isdigit()
-            and next_text[:1].isdigit()
-        )
-
-        # 长度差不多了，而且遇到了自然标点。版本号和小数中的
-        # 点不是句子边界，例如 Occamy-1.0 不能在 “1.” 后切开。
-        if (
-            len(current_text) >= min_chars
-            and current_text[-1] in PUNCTUATIONS
-            and not decimal_continues
-        ):
-            flush()
-
-    flush()
-
-    # A chunk created by the character limit can end with a very short word
-    # that actually starts the next spoken phrase (for example ``...运行的 它``).
-    # Move that tail to the following chunk when there is room. This keeps the
-    # word-level timing intact while making the visual subtitle read naturally.
-    sentence_punctuation = set(PUNCTUATIONS + "、，。！？；：‘’“”《》（）【】—…·-–—/")
-
-    def raw_text(items: list[dict]) -> str:
-        return "".join(str(item.get("text", "")) for item in items)
-
-    def refresh(item: dict):
-        item["text"] = raw_text(item["_words"]).strip()
-        item["start"] = item["_words"][0]["start"]
-        item["end"] = item["_words"][-1]["end"]
-
-    for index in range(len(subtitles) - 1):
-        current = subtitles[index]
-        following = subtitles[index + 1]
-        current_words = current["_words"]
-        following_words = following["_words"]
-
-        if len(current_words) < 2 or not following_words:
-            continue
-
-        # Usually one Edge-TTS word is enough. If it was split into two very
-        # short tokens, move the smallest trailing run (up to four visible
-        # characters) as one unit.
-        tail_words = []
-        tail_length = 0
-        cursor = len(current_words) - 1
-        while cursor >= 1:
-            token = str(current_words[cursor].get("text", "")).strip()
-            if (
-                not token
-                or all(char in sentence_punctuation for char in token)
-                or token[-1] in sentence_punctuation
-            ):
-                break
-            if (
-                len(token) > short_tail_chars
-                or tail_length + len(token) > short_tail_chars
-            ):
-                break
-            tail_words.insert(0, current_words[cursor])
-            tail_length += len(token)
-            cursor -= 1
-
-        if not tail_words:
-            continue
-
-        prefix_words = current_words[:cursor + 1]
-        prefix_text = raw_text(prefix_words).strip()
-        following_text = raw_text(following_words).strip()
-        if len(prefix_text) < min_chars or len(following_text) + tail_length > max_total_chars:
-            continue
-
-        # Avoid carrying punctuation-introduced leading whitespace into the
-        # first word of the next subtitle.
-        moved_words = []
-        for word in tail_words:
-            moved = copy.copy(word)
-            moved["text"] = str(moved.get("text", "")).lstrip()
-            moved_words.append(moved)
-
-        current["_words"] = prefix_words
-        following["_words"] = moved_words + following_words
-        refresh(current)
-        refresh(following)
-
-    def wrap_text(text: str) -> str:
-        """Wrap a subtitle into at most two balanced, readable lines."""
-        text = " ".join(text.strip().split())
-        if len(text) <= max_chars or max_lines == 1:
-            return text
-
-        # Prefer breaking at a visual space, but fall back to a character
-        # boundary for Chinese text where spaces are not normally present.
-        split_at = text.rfind(" ", 0, max_chars + 1)
-        if (
-            split_at < max(1, max_chars // 2)
-            or len(text) - split_at > max_chars
-        ):
-            split_at = max_chars
-        first = text[:split_at].rstrip()
-        second = text[split_at:].strip()
-        return f"{first}\n{second}"
-
-    result = []
-    for subtitle in subtitles:
-        refresh(subtitle)
-        result.append({
-            "text": wrap_text(subtitle["text"]),
-            "start": subtitle["start"],
-            "end": subtitle["end"],
-        })
-    return result
-
-
-def write_segment_srt(
-    segment: dict,
-    output_path: str | Path,
-    max_chars: int = 18,
-):
-    output_path = Path(output_path)
-
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    subtitles = build_subtitles(
-        words=segment["words"],
-        source_text=segment.get("text"),
-        max_chars=max_chars,
-    )
-
-    blocks = []
-
-    for index, subtitle in enumerate(
-        subtitles,
-        start=1,
-    ):
-        blocks.append(
-            f"{index}\n"
-            f"{format_srt_time(subtitle['start'])} --> "
-            f"{format_srt_time(subtitle['end'])}\n"
-            f"{subtitle['text']}\n"
-        )
-
-    output_path.write_text(
-        "\n".join(blocks),
-        encoding="utf-8",
-    )
-
-def generate_segment_srts(
-    manifest_path: str | Path,
-    output_dir: str | Path,
-    max_chars: int = 18,
-):
-    manifest_path = Path(manifest_path)
-    output_dir = Path(output_dir)
-
-    manifest = json.loads(
-        manifest_path.read_text(
-            encoding="utf-8"
-        )
-    )
-
-    for segment in manifest["segments"]:
-        index = segment["index"]
-
-        output_path = (
-            output_dir
-            / f"segment_{index:03d}.srt"
-        )
-
-        write_segment_srt(
-            segment=segment,
-            output_path=output_path,
-            max_chars=max_chars,
-        )
-
-        print(
-            f"字幕生成完成: {output_path}"
-        )
-#########################生产srt字幕##############################
 
 #########################合成segment中srt字幕##########################
 def run_cmd(

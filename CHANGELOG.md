@@ -8,6 +8,8 @@
 
 - 顶层项目更名为 Research Agent Workbench；Paper Video Agent 作为首个独立 Agent 保留，
   现有 Python 包名与命令保持兼容。
+- 抽取 `research_agent_core` 与 `research_video_core` 共享层，统一缓存、环境配置、TTS、字幕和
+  时间轴能力，为后续 Agent 复用；Paper Video Agent 的现有命令、导入路径和缓存指纹保持兼容。
 
 ## [0.2.0] - 2026-09-25
 

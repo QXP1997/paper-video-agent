@@ -1,4 +1,3 @@
-import hashlib
 import json
 from functools import lru_cache
 from pathlib import Path
@@ -19,6 +18,13 @@ from paper_video_agent.models import (
     PaperScript,
     PaperScriptAudit,
 )
+from research_agent_core.artifacts import (
+    canonical_sha256 as _canonical_sha256,
+)
+from research_agent_core.artifacts import (
+    write_json_atomic as _write_json_atomic,
+)
+from research_agent_core.prompts import prompt_messages as _prompt_messages
 
 EDITOR_GENERATION_VERSION = 1
 EDITOR_CACHE_VERSION = 1
@@ -134,16 +140,6 @@ def _get_editor_chain():
         method="function_calling",
         include_raw=True,
     )
-
-
-def _prompt_messages(prompt: ChatPromptTemplate) -> list[dict[str, str]]:
-    return [
-        {
-            "role": type(message).__name__,
-            "template": message.prompt.template,
-        }
-        for message in prompt.messages
-    ]
 
 
 def editor_generation_cache_material() -> dict:
@@ -298,16 +294,6 @@ def generate_edited_script(
     )
 
 
-def _canonical_sha256(data: object) -> str:
-    serialized = json.dumps(
-        data,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
 def build_editor_cache_metadata(
     raw_script: PaperScript,
     audit: PaperScriptAudit,
@@ -325,16 +311,6 @@ def build_editor_cache_metadata(
         "fingerprint": _canonical_sha256(inputs),
         "inputs": inputs,
     }
-
-
-def _write_json_atomic(output_path: Path, data: dict) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    temporary_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary_path.replace(output_path)
 
 
 def load_cached_edited_script(
