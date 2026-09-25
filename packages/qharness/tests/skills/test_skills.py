@@ -20,11 +20,14 @@ from qharness.skills import (
 )
 
 
-def write_skill(root: Path, name: str, *, body: str = "Follow this workflow.") -> Path:
+def write_skill(root: Path, name: str, *, body: str = "按照这个流程完成任务。") -> Path:
     skill_root = root / name
     skill_root.mkdir(parents=True)
     (skill_root / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: Test {name}.\n---\n\n{body}\n",
+        (
+            f"---\nname: {name}\ndescription: 用于测试 {name} 的中文 Skill。\n"
+            f"metadata:\n  display-name: {name} 测试能力\n---\n\n{body}\n"
+        ),
         encoding="utf-8",
     )
     return skill_root
@@ -33,9 +36,9 @@ def write_skill(root: Path, name: str, *, body: str = "Follow this workflow.") -
 def contract() -> TaskContract:
     return TaskContract(
         task_id="task-1",
-        objective="Create an artifact",
-        criteria=(Criterion(id="C1", description="Artifact is valid"),),
-        constraints=("Keep source evidence",),
+        objective="创建一个产物",
+        criteria=(Criterion(id="C1", description="产物通过校验"),),
+        constraints=("保留来源证据",),
     )
 
 
@@ -48,6 +51,9 @@ class SkillLoadingTests(unittest.TestCase):
             discovered = discover_skills((root,))
 
             self.assertEqual(set(discovered), {"alpha-skill"})
+            self.assertEqual(discovered["alpha-skill"].code, "alpha-skill")
+            self.assertEqual(discovered["alpha-skill"].display_name, "alpha-skill 测试能力")
+            self.assertEqual(discovered["alpha-skill"].skill_path.name, "SKILL.md")
             self.assertEqual(contract().active_skills, ())
 
     def test_directory_name_must_match_manifest_name(self) -> None:
@@ -83,7 +89,7 @@ class SkillActivationTests(unittest.TestCase):
             self.assertEqual(active_skill_bindings(activated), {skill.name: skill.digest})
             self.assertEqual(activated.active_skills[0].instructions, skill.instructions)
             self.assertEqual(activated_again, activated)
-            self.assertEqual(activated.constraints, ("Keep source evidence",))
+            self.assertEqual(activated.constraints, ("保留来源证据",))
 
     def test_deactivation_only_removes_selected_skill(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -100,11 +106,14 @@ class SkillActivationTests(unittest.TestCase):
     def test_changed_skill_requires_deactivation_before_reactivation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            skill_root = write_skill(root, "alpha-skill", body="Version one.")
+            skill_root = write_skill(root, "alpha-skill", body="第一版指令。")
             first = load_skill(skill_root)
             activated = activate_skills(contract(), (first,))
             (skill_root / "SKILL.md").write_text(
-                "---\nname: alpha-skill\ndescription: Test alpha.\n---\n\nVersion two.\n",
+                (
+                    "---\nname: alpha-skill\ndescription: 用于测试 alpha-skill 的中文 Skill。\n"
+                    "metadata:\n  display-name: Alpha 测试能力\n---\n\n第二版指令。\n"
+                ),
                 encoding="utf-8",
             )
             second = load_skill(skill_root)

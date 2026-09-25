@@ -29,7 +29,7 @@ def _unquote(value: str) -> str:
     return value
 
 
-def _parse_skill_document(text: str) -> tuple[dict[str, str], str]:
+def _parse_skill_document(text: str) -> tuple[dict[str, str], dict[str, str], str]:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         raise SkillConfigurationError("SKILL.md 必须以 YAML frontmatter 开头")
@@ -38,16 +38,23 @@ def _parse_skill_document(text: str) -> tuple[dict[str, str], str]:
     except StopIteration as error:
         raise SkillConfigurationError("SKILL.md 缺少 frontmatter 结束标记") from error
 
-    metadata: dict[str, str] = {}
+    manifest: dict[str, str] = {}
+    custom_metadata: dict[str, str] = {}
+    section: str | None = None
     for line in lines[1:end]:
-        if not line or line[0].isspace() or ":" not in line:
+        if not line.strip() or ":" not in line:
             continue
+        indent = len(line) - len(line.lstrip())
         key, value = line.split(":", 1)
         key = key.strip()
-        if key in {"name", "description"}:
-            metadata[key] = _unquote(value)
+        if indent == 0:
+            section = key if key == "metadata" and not value.strip() else None
+            if key in {"name", "description"}:
+                manifest[key] = _unquote(value)
+        elif section == "metadata" and indent >= 2 and value.strip():
+            custom_metadata[key] = _unquote(value)
     instructions = "\n".join(lines[end + 1:]).strip()
-    return metadata, instructions
+    return manifest, custom_metadata, instructions
 
 
 def load_skill(path: str | Path) -> Skill:
@@ -63,9 +70,10 @@ def load_skill(path: str | Path) -> Skill:
     except (OSError, UnicodeDecodeError) as error:
         raise SkillConfigurationError(f"无法读取 UTF-8 SKILL.md: {skill_path}") from error
 
-    metadata, instructions = _parse_skill_document(text)
-    name = metadata.get("name", "")
-    description = metadata.get("description", "")
+    manifest, metadata, instructions = _parse_skill_document(text)
+    name = manifest.get("name", "")
+    description = manifest.get("description", "")
+    display_name = metadata.get("display-name", name)
     root = skill_path.parent.resolve()
     if not _SKILL_NAME.fullmatch(name) or len(name) > 64:
         raise SkillConfigurationError("Skill name 必须是 1 至 64 位小写字母、数字或连字符")
@@ -73,18 +81,21 @@ def load_skill(path: str | Path) -> Skill:
         raise SkillConfigurationError("Skill 目录名必须与 frontmatter name 一致")
     if not description:
         raise SkillConfigurationError("Skill description 不能为空")
+    if not display_name:
+        raise SkillConfigurationError("Skill metadata.display-name 不能为空")
     if not instructions:
         raise SkillConfigurationError("Skill 指令正文不能为空")
 
-    digest = hashlib.sha256(
-        json.dumps(
-            {"name": name, "description": description, "instructions": instructions},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    return Skill(name, description, instructions, root, digest)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return Skill(
+        name=name,
+        display_name=display_name,
+        description=description,
+        instructions=instructions,
+        skill_path=skill_path.resolve(),
+        digest=digest,
+        metadata=metadata,
+    )
 
 
 def discover_skills(roots: Iterable[str | Path]) -> dict[str, Skill]:

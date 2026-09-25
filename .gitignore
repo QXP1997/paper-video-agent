@@ -34,6 +34,7 @@ dist/
 *.db-journal
 *.sqlite
 *.sqlite3
+.qharness/
 
 # Papers and generated media
 paper/

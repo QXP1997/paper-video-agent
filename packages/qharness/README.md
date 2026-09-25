@@ -123,28 +123,43 @@ Dulwich 与操作数据库的存储方式不同：数据库是全局共用的一
 
 ## Skill 启用与停用
 
-QHarness 区分四个状态：Skill 文件存在表示已安装，`discover_skills()` 只表示已发现，只有
-`activate_skills()` 才会把它加入某个 `TaskContract.active_skills`，`deactivate_skills()` 则从该任务
-契约中移除。任何 Skill 都不会因为安装或发现而默认启用。
+QHarness 将 Skill 文件和可查询元数据分层管理：`import_skill()` 把整个 Skill 目录复制到
+`.qharness/skills/<code>/`；SQLite `skills` 表只保存 code、中文名称、描述、`SKILL.md` 入口路径、
+摘要、扩展元数据和启停状态。`references/`、`scripts/` 与 `assets/` 从入口文件的父目录
+相对解析，数据库不保存每个资源文件的路径。
+
+新导入 Skill 默认停用。通用对话 Agent 通过 `load_enabled()` 读取前端已启用项；内置业务
+Agent 可通过 `load_fixed(code)` 按固定 code 读取，显式忽略前端启停状态。目录中的文件与入库摘要
+不一致时会拒绝加载，需重新导入，不会静默接受被篡改的内容。
 
 已启用 Skill 的说明和摘要会作为任务契约快照持久化，因此任务恢复和上下文压缩不会依赖后来被
 修改的本地 `SKILL.md`。相同名称但摘要不同的版本不能直接覆盖；先显式停用旧版，再启用新版。
 Skill 规则与普通 `constraints` 分离，不会被最终验证器误当成业务验收项。
 
 ```python
+from qharness.persistence import DatabaseManager, load_database_config
 from qharness.skills import (
+    SkillCatalog,
     SkillToolProvider,
     activate_skills,
     deactivate_skills,
-    discover_skills,
 )
 
-installed = discover_skills(("./skills",))
-deck_skill = installed["create-research-deck"]
+database = DatabaseManager(load_database_config("config/database.toml"))
+database.initialize()
+catalog = SkillCatalog(database.session_factory, skill_root=".qharness/skills")
+catalog.import_skill("./skills/create-research-deck")
 
-# 默认没有 Skill；应用按任务显式启用。
+# 通用对话 Agent 仅查询已启用项。
+catalog.set_enabled("create-research-deck", True)
+enabled = catalog.load_enabled()
+
+# 内置业务 Agent 可以按 code 固定加载，忽略启停开关。
+deck_skill = catalog.load_fixed("create-research-deck")
+
+# 把选定 Skill 的不可变快照写入具体任务契约。
 contract = activate_skills(contract, (deck_skill,))
-providers.append(SkillToolProvider.from_contract(contract, installed))
+providers.append(SkillToolProvider.from_contract(contract, {deck_skill.code: deck_skill}))
 
 # 后续任务不再需要时显式停用，并且不要再注册对应 Provider。
 contract = deactivate_skills(contract, ("create-research-deck",))
@@ -155,7 +170,7 @@ contract = deactivate_skills(contract, ("create-research-deck",))
 
 ## Agent Loop 实现进度
 
-第八批正在进行：已新增 [18 个微型任务与可复现评测入口](evals/README.md)，累计 **211 项离线测试通过**。真实模型探针促使 Planner 增加 Todo / Stage 检查层级覆盖校验，规划稳定性仍待改善。退出 360 后 SRT 已通过预检，固定命令和真实任务均能在沙箱中执行；完整策略对照和生产 Profile 尚未验收，见[第八批验收记录](docs/Agent-Loop第八批验收记录.md)。执行 `.\.venv\Scripts\python.exe -X utf8 -m evals.run --plan` 生成评测计划，去掉 `--plan` 执行真实任务，`--probe-model` 额外检查真实规划协议。
+第八批正在进行：已新增 [18 个微型任务与可复现评测入口](evals/README.md)，累计 **215 项离线测试通过**。真实模型探针促使 Planner 增加 Todo / Stage 检查层级覆盖校验，规划稳定性仍待改善。退出 360 后 SRT 已通过预检，固定命令和真实任务均能在沙箱中执行；完整策略对照和生产 Profile 尚未验收，见[第八批验收记录](docs/Agent-Loop第八批验收记录.md)。执行 `.\.venv\Scripts\python.exe -X utf8 -m evals.run --plan` 生成评测计划，去掉 `--plan` 执行真实任务，`--probe-model` 额外检查真实规划协议。
 
 已完成[实现计划](docs/Agent-Loop实现计划.md)的批次 1—7：Planner / Executor 已串起完整任务主线，并接入分层反馈、动态阶段选择、证据关联的进展判断及长任务生命周期。应用提供原始 TaskContract 和受信任的 CheckCatalog，通过 `RunService(services)` 调度，会生成初步 Todo、动态规划阶段、执行行动、验证和选择反馈，最终返回 COMPLETED / WAITING / TERMINATED 对应的 RunState。初始规划前暂停时返回 None，保留持久输入与调用账本。
 
@@ -199,7 +214,7 @@ REPAIR 复用完整 StagePlan，只建立新 Attempt；RETRY_CHECK 不重新调�
 
 `context_compaction` 在容量不足时压缩历史，保留完整任务与验收要求；原文和 ContextManifest 存入 Artifact，可经只读 `read_run_artifact` 工具分页取回。示例配置启用压缩，旧配置默认关闭；Artifact 默认保留上限 512 MiB，超限拒绝写入，已有证据不自动删除。接口、恢复取证与单主机边界见[实现计划第 5.7 节](docs/Agent-Loop实现计划.md#57-批次-7)。真实模型、SRT 和生产 Profile 验收是下一批次。
 
-数据库仍由应用级 DatabaseManager.initialize() 统一升级，当前 revision 为 `0003_run_lifecycle`：在七张 Loop 表基础上增加输入、事件两张表，并保留工作区历史；已验证 SQLite 旧数据升级。工具返回的完整业务数据在 `ToolExecutionResult.data`，模型摘要在 `content`，持久输出引用在 `artifact_id`；外层 success 不代表 Shell 退出码为零。
+数据库仍由应用级 DatabaseManager.initialize() 统一升级，当前 revision 为 `0004_skill_catalog`：在原有 Loop 生命周期和工作区历史表之外增加 `skills` 元数据索引；已验证 SQLite 旧数据升级。工具返回的完整业务数据在 `ToolExecutionResult.data`，模型摘要在 `content`，持久输出引用在 `artifact_id`；外层 success 不代表 Shell 退出码为零。
 
 ## 当前目录
 
@@ -224,7 +239,7 @@ src/qharness/resources/srt/               固定版本 SRT 的 npm 清单与锁�
 src/qharness/runtime/                     托管运行时清单、校验、安全安装与名称解析
 src/qharness/run/                         单次 Run 的租户、工作区、沙箱和取消上下文
 src/qharness/loop/                        推理契约、状态转换、调用账本、Planner、Actor、Executor 与反馈路由
-src/qharness/skills/                      Skill 发现、显式启停、任务快照和只读参考资料工具
+src/qharness/skills/                      Skill 托管导入、SQLite 索引、启停、任务快照和只读资源工具
 src/qharness/verification/                三层验证、检查解析、证据有效性与失败包
 src/qharness/workspace/                   路径守卫、SQLAlchemy 台账、Dulwich 历史、补丁与回滚
 src/qharness/sandbox/                     统一沙箱接口与 Anthropic SRT 后端

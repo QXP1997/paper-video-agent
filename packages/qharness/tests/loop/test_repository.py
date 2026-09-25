@@ -1,4 +1,3 @@
-import json
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -7,10 +6,6 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
-from sqlalchemy import inspect, text
-
-from tests.support.loop_runtime import LoopRuntime
-from tests.support.workspaces import stage
 from qharness.exception import LoopExecutionError, LoopTransitionError
 from qharness.loop.config import LoopConfig
 from qharness.loop.models import StartStage, Wait
@@ -18,6 +13,10 @@ from qharness.loop.repository import LoopRepository
 from qharness.persistence import OrmBase
 from qharness.tools.base import ToolExecutionPolicy, ToolRuntimePolicy
 from qharness.workspace import SqlAlchemyWorkspaceHistoryRepository
+from sqlalchemy import inspect, text
+
+from tests.support.loop_runtime import LoopRuntime
+from tests.support.workspaces import stage
 
 
 class RepositoryTests(unittest.TestCase):
@@ -42,8 +41,9 @@ class RepositoryTests(unittest.TestCase):
         runtime.database.initialize()
         self.assertEqual(history.get_operation(operation).commit_id, "a" * 40)
         self.assertIn("loop_artifacts", inspect(runtime.database.engine).get_table_names())
+        self.assertIn("skills", inspect(runtime.database.engine).get_table_names())
         with runtime.database.engine.connect() as connection:
-            self.assertEqual(connection.execute(text("select version_num from alembic_version")).scalar(), "0003_run_lifecycle")
+            self.assertEqual(connection.execute(text("select version_num from alembic_version")).scalar(), "0004_skill_catalog")
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), OrmBase.metadata), [])
 
     def test_run_state_compare_and_swap_and_reconstruction_keeps_budget(self):

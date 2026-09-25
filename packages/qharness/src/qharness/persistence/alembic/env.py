@@ -12,6 +12,7 @@ from qharness.persistence.base import OrmBase
 # 迁移的实际结构仍由 versions 下的不可变脚本决定，运行时不会 create_all。
 import qharness.workspace.history  # noqa: F401, E402
 import qharness.loop.repository  # noqa: F401, E402
+import qharness.skills.catalog  # noqa: F401, E402
 
 
 def run_migrations() -> None:
