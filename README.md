@@ -17,6 +17,7 @@
 | Agent | 状态 | 用途 |
 | --- | --- | --- |
 | `paper_video_agent` | Beta，可用 | 将论文 PDF 转换为有依据、会聚焦图表的中文精讲视频 |
+| `presentation_agent` | 基础能力已完成 | 将论文、技术博客或知识材料转换为可校验、可渲染的演示文稿规格 |
 | `tech_explainer_agent` | 规划中 | 将官方技术博客、产品报告和文档转换为中文解说视频 |
 
 现阶段的安装与使用说明均针对 `paper_video_agent`。
@@ -313,7 +314,9 @@ packages/
 src/
 ├── research_agent_core/   # Agent 通用基础设施：文档解析、缓存、环境配置和提示词序列化
 │   └── document/          # 共享 PDF/MinerU 解析、视觉元素提取、解析缓存和整页渲染
+├── research_presentation_core/ # 渲染器无关的 SlideDeckSpec、引用关系和确定性校验
 ├── research_video_core/   # 视频通用能力：TTS、字幕切分、SRT、音频与视觉时间轴
+├── presentation_agent/    # 基于 QHarness + Skill 组装演示文稿任务
 └── paper_video_agent/     # 论文领域逻辑：论文规划、事实审核、视觉编排和视频流水线
 ```
 
@@ -330,6 +333,20 @@ python -m pip install -e ./packages/qharness
 
 根项目不会复制 QHarness 的运行时实现，也不会把它的嵌套源码打进 `paper-video-agent` 包；后续
 Presentation Agent 通过公开的 `qharness` 包接口接入循环、工具、恢复和验证能力。
+
+Presentation Agent 当前以 `deck_spec.json` 为事实来源，而不是把 PPTX 写死为唯一输出。该规格可以被
+后续的 PPTX、网页幻灯片或视频渲染器复用，已提供以下确定性检查命令：
+
+```bash
+python -m research_presentation_core validate /path/to/deck_spec.json
+python -m research_presentation_core schema
+```
+
+PPT 生成规则实现为 `create-research-deck` Skill。QHarness 把导入的整套 Skill 统一托管在
+`.qharness/skills/<code>/`，SQLite 只索引 `SKILL.md` 入口路径、中文名称、描述、摘要、
+扩展元数据和启停状态。通用对话 Agent 只查询已启用项；`presentation_agent` 作为内置业务
+Agent，按固定 code 加载所需 Skill，不受前端启停开关影响。设计与接入示例见
+[Presentation Agent 文档](docs/presentation-agent.md)。
 
 ## 开发
 

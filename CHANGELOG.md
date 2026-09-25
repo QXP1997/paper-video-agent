@@ -8,8 +8,10 @@
 
 - 将 QHarness 作为 `packages/qharness` 下的独立子项目迁入工作台，并保留原仓库的完整 Git 提交链、
   独立打包配置、测试、文档和运行时资源。
-- 为 QHarness 增加通用 Skill 发现、显式启用、停用、任务快照和只读参考资料工具；安装或发现
-  Skill 不会默认启用。
+- 为 QHarness 增加通用 Skill 托管目录、SQLite 元数据索引、启用/停用、任务快照和只读
+  参考资料工具；Skill 整目录导入 `.qharness/skills`，新导入项默认停用。
+- 新增 Presentation Agent 基础层、`create-research-deck` Skill 与渲染器无关的
+  `SlideDeckSpec`，支持来源、素材、讲稿、视觉构建步骤和确定性引用校验。
 
 ### Changed
 
