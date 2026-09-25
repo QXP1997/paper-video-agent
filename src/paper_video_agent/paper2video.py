@@ -31,7 +31,6 @@ from paper_video_agent.finalizer import (
     validate_final_script,
 )
 from paper_video_agent.models import PaperScript
-from paper_video_agent.pdf_util import parse_pdf
 from paper_video_agent.tts import generate_tts, get_tts_config
 from paper_video_agent.visual import (
     align_visual_review,
@@ -47,6 +46,7 @@ from research_agent_core.artifacts import (
 from research_agent_core.artifacts import (
     write_json_atomic as _write_json_atomic,
 )
+from research_agent_core.document import parse_pdf
 from research_video_core.subtitles import (
     build_subtitles,
     format_srt_time,
@@ -982,8 +982,10 @@ def build_video(
     # pdf转文本和图片
     pages, _page_images = parse_pdf(
         pdf_path=pdf_path,
-        output_dir=paper_dir / "images",
+        page_image_dir=paper_dir / "images",
         zoom=2.0,
+        cache_path=paper_dir / "output" / "mineru_parse.json",
+        mineru_result_dir=paper_dir / "output" / "mineru",
     )
 
     script_path = Path(paper_dir) / "output" / "paper_script.json"

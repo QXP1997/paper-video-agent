@@ -10,6 +10,8 @@
   现有 Python 包名与命令保持兼容。
 - 抽取 `research_agent_core` 与 `research_video_core` 共享层，统一缓存、环境配置、TTS、字幕和
   时间轴能力，为后续 Agent 复用；Paper Video Agent 的现有命令、导入路径和缓存指纹保持兼容。
+- 将 PDF、MinerU、分页视觉元素、解析缓存和整页渲染迁入公共文档层；各 Agent 可显式指定自己的
+  页面图片、解析缓存和 MinerU 结果目录。
 
 ## [0.2.0] - 2026-09-25
 

@@ -11,6 +11,7 @@ from paper_video_agent.pdf_util import (
     parse_pdf,
     pdf2text,
 )
+from research_agent_core.document import parse_pdf as parse_shared_pdf
 
 
 class FakeMinerUClient:
@@ -46,6 +47,31 @@ def test_parse_pdf_extracts_text_and_renders_complete_pages(tmp_path: Path) -> N
     }
     assert page_images[1].is_file()
     assert (tmp_path / "output" / "mineru" / "paper_content_list.json").is_file()
+
+
+def test_shared_pdf_parser_uses_agent_selected_artifact_paths(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "paper.pdf"
+    document = pymupdf.open()
+    document.new_page(width=300, height=400)
+    document.save(pdf_path)
+    document.close()
+
+    cache_path = tmp_path / "agent-workspace" / "cache" / "document.json"
+    result_dir = tmp_path / "agent-workspace" / "source" / "mineru"
+    image_dir = tmp_path / "agent-workspace" / "pages"
+    text_data, page_images = parse_shared_pdf(
+        pdf_path,
+        image_dir,
+        zoom=0.2,
+        cache_path=cache_path,
+        mineru_result_dir=result_dir,
+        mineru_client=FakeMinerUClient(),
+    )
+
+    assert text_data["pages"][0]["text"] == "Full page test"
+    assert cache_path.is_file()
+    assert result_dir.is_dir()
+    assert page_images[1].parent == image_dir
 
 
 def test_parse_pdf_combines_mineru_blocks_by_page(tmp_path: Path) -> None:

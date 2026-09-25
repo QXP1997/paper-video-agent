@@ -309,13 +309,15 @@ Windows 会自动尝试微软雅黑。macOS/Linux 建议安装 Noto Sans CJK，�
 
 ```text
 src/
-├── research_agent_core/   # Agent 通用基础设施：缓存指纹、原子写入、环境配置、提示词序列化
+├── research_agent_core/   # Agent 通用基础设施：文档解析、缓存、环境配置和提示词序列化
+│   └── document/          # 共享 PDF/MinerU 解析、视觉元素提取、解析缓存和整页渲染
 ├── research_video_core/   # 视频通用能力：TTS、字幕切分、SRT、音频与视觉时间轴
-└── paper_video_agent/     # 论文领域逻辑：MinerU/PDF、论文规划、事实审核、视觉素材与流水线
+└── paper_video_agent/     # 论文领域逻辑：论文规划、事实审核、视觉编排和视频流水线
 ```
 
-`paper_video_agent` 的旧导入路径继续保留兼容；后续技术网页解说等 Agent 可以直接依赖两个共享层，
-只实现自己的内容采集、证据模型和讲稿规划。共享模块不应反向依赖具体 Agent。
+`paper_video_agent` 的旧导入路径继续保留兼容；后续论文总结、论文对比等 Agent 可以直接复用公共
+PDF 解析结果，技术网页解说等 Agent 也可以复用缓存与视频能力，只实现自己的内容采集、证据模型
+和讲稿规划。共享模块不应反向依赖具体 Agent。
 
 ## 开发
 
