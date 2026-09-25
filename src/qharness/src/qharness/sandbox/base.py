@@ -1,0 +1,214 @@
+# -*- coding: utf-8 -*-
+"""沙箱后端的统一领域对象与抽象接口。"""
+
+from __future__ import annotations
+
+import asyncio
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from qharness.exception import SandboxExecutionError
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxExecutionRequest:
+    """描述一次由 SRT 内部 Shell 执行的完整命令。"""
+
+    # 模型生成的完整 Shell 命令，允许使用管道、重定向、变量和条件执行。
+    command: str
+
+    # 目标进程的工作目录，只允许填写当前 WorkspaceContext 内的路径。
+    cwd: str | Path = "."
+
+    # 写入目标进程标准输入的 UTF-8 文本；None 表示不提供标准输入。
+    stdin: str | None = None
+
+    # 本次执行的超时秒数；None 表示使用 SandboxConfig 中的全局默认值。
+    timeout_seconds: float | None = None
+
+    # 本次标准输出最多保留的字符数；None 表示使用全局默认值。
+    max_stdout_chars: int | None = None
+
+    # 本次标准错误最多保留的字符数；None 表示使用全局默认值。
+    max_stderr_chars: int | None = None
+
+    # 所属 Agent Run 的标识，后续用于串联日志、审计记录和文件变更。
+    run_id: str | None = None
+
+    # 本次具体操作的标识，后续可以与版本控制或撤回记录进行关联。
+    operation_id: str | None = None
+
+    # 外部主动取消信号；事件被设置后会终止本次沙箱进程树。
+    cancellation_event: asyncio.Event | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """尽早拒绝无效命令或执行限制。"""
+
+        if not isinstance(self.command, str) or not self.command.strip():
+            raise SandboxExecutionError("沙箱命令不能为空。")
+        if "\x00" in self.command:
+            raise SandboxExecutionError("沙箱命令不能包含空字符。")
+        _validate_optional_positive_number(
+            self.timeout_seconds,
+            "timeout_seconds",
+        )
+        _validate_optional_positive_int(
+            self.max_stdout_chars,
+            "max_stdout_chars",
+        )
+        _validate_optional_positive_int(
+            self.max_stderr_chars,
+            "max_stderr_chars",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxExecutionResult:
+    """保存命令本身的退出状态以及 QHarness 主动中止原因。"""
+
+    # 目标进程退出码；0 通常表示成功，None 表示未取得有效退出码。
+    exit_code: int | None
+
+    # 从目标进程标准输出读取到的 UTF-8 文本。
+    stdout: str
+
+    # 从目标进程标准错误读取到的 UTF-8 文本。
+    stderr: str
+
+    # 从启动到退出或被终止的总耗时，单位为秒。
+    duration_seconds: float
+
+    # 是否因为超过 timeout_seconds 而被 QHarness 主动终止。
+    timed_out: bool = False
+
+    # 是否因为 cancellation_event 被设置而主动终止。
+    cancelled: bool = False
+
+    # 标准输出是否超过字符上限；超出部分不会保存在内存中。
+    stdout_truncated: bool = False
+
+    # 标准错误是否超过字符上限；超出部分不会保存在内存中。
+    stderr_truncated: bool = False
+
+    # 原样回传请求中的 Agent Run 标识，方便调用方关联上下文。
+    run_id: str | None = None
+
+    # 原样回传请求中的操作标识，方便调用方定位本次执行。
+    operation_id: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        """仅在进程正常以零退出且未被 QHarness 中止时返回真。"""
+
+        return (
+            self.exit_code == 0
+            and not self.timed_out
+            and not self.cancelled
+            and not self.stdout_truncated
+            and not self.stderr_truncated
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxStatus:
+    """表示沙箱运行时和系统隔离能力的预检结果。"""
+
+    # 沙箱后端名称，例如 srt。
+    backend: str
+
+    # 当前机器是否已经满足安全执行条件；为 False 时不得降级执行。
+    available: bool
+
+    # 面向用户的状态说明或不可用原因。
+    message: str
+
+    # 实际检测到的沙箱运行时版本；无法识别时为 None。
+    version: str | None = None
+
+    # 是否还需要用户执行一次系统级初始化，例如 Windows SRT 安装。
+    setup_required: bool = False
+
+    # 初始化程序的固定 argv，供诊断或客户端展示；实际提权统一走 setup()。
+    setup_command: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxSetupResult:
+    """保存一次需要用户确认的系统级沙箱初始化结果。"""
+
+    # 初始化程序是否以零退出，且后续沙箱预检已经通过。
+    completed: bool
+
+    # 用户是否在确认窗口或 Windows UAC 窗口中取消了操作。
+    cancelled: bool
+
+    # 面向客户端和日志的结果说明。
+    message: str
+
+    # 系统初始化程序的退出码；未启动或无法取得时为 None。
+    exit_code: int | None = None
+
+    # 初始化完成后重新执行的只读状态检查结果。
+    status: SandboxStatus | None = None
+
+
+class SandboxBackend(ABC):
+    """所有本地沙箱实现共同遵循的最小接口。"""
+
+    @abstractmethod
+    async def check_status(self) -> SandboxStatus:
+        """以只读方式检查依赖、身份、版本和系统初始化状态。"""
+
+    async def prepare(self) -> SandboxStatus:
+        """准备不需要提权的沙箱依赖，并返回最新状态。
+
+        默认实现只执行只读检查；需要下载运行时的后端可以覆盖该方法。
+        """
+
+        return await self.check_status()
+
+    async def setup(self, *, force: bool = False) -> SandboxSetupResult:
+        """请求用户完成系统级初始化；不需要初始化的后端直接返回状态。"""
+
+        status = await self.prepare()
+        return SandboxSetupResult(
+            completed=status.available,
+            cancelled=False,
+            message=status.message,
+            status=status,
+        )
+
+    @abstractmethod
+    async def execute(
+        self,
+        request: SandboxExecutionRequest,
+    ) -> SandboxExecutionResult:
+        """在沙箱 Shell 内执行完整命令，并收集受限输出。"""
+
+
+def _validate_optional_positive_number(
+    value: float | None,
+    name: str,
+) -> None:
+    """校验可选正数。"""
+
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SandboxExecutionError(f"{name} 必须是正数。")
+    if value <= 0:
+        raise SandboxExecutionError(f"{name} 必须大于 0。")
+
+
+def _validate_optional_positive_int(value: int | None, name: str) -> None:
+    """校验可选正整数。"""
+
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise SandboxExecutionError(f"{name} 必须是大于 0 的整数。")

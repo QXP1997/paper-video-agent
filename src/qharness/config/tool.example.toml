@@ -1,0 +1,39 @@
+# QHarness 工具执行策略配置模板。
+# 首次使用时复制为 tool.toml；程序启动时会重新读取该文件。
+
+[tool_execution]
+# 以下两项默认不限制；需要全局保险丝时取消注释并填写正整数。
+# max_total_calls = 100
+# max_concurrency = 8
+
+# 未单独配置的工具继承以下默认策略。
+[tool_execution.defaults]
+max_calls = 10
+timeout_seconds = 30.0
+
+# 单个工具的并发上限；不配置时只受全局 max_concurrency 限制。
+# max_concurrency = 2
+
+# 模型传入的 JSON 参数和工具返回文本的字符数限制。
+max_argument_chars = 64000
+max_result_chars = 200000
+
+# true 表示结果过长时截断；false 表示返回 result_too_large 错误。
+truncate_oversized_results = true
+
+# true 表示默认要求审批 Hook 明确放行。
+requires_approval = false
+
+# 按注册工具名称覆盖默认策略；未声明的字段继续继承 defaults。
+[tool_execution.tools.multiply]
+max_calls = 2
+timeout_seconds = 5.0
+max_result_chars = 10000
+
+# 沙箱进程工具的限制完全由执行策略提供，工具 Handler 内不保存这些数值。
+[tool_execution.tools.run_command]
+max_calls = 10
+timeout_seconds = 90.0
+max_concurrency = 2
+# 接入客户端审批 Hook 后可以改成 true；当前 main 示例保持可直接运行。
+requires_approval = false

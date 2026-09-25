@@ -1,0 +1,6 @@
+# QHarness Dulwich 工作区历史配置模板。
+# 相对路径均相对于本配置文件所在目录，不受程序启动目录影响。
+
+[workspace_history]
+# Dulwich 私有仓库的宿主目录；每个租户工作区使用独立摘要子目录。
+storage_root = "../.qharness/history"

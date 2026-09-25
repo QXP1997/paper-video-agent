@@ -1,0 +1,31 @@
+# QHarness 模型调用配置模板。
+# 首次使用时复制为 model.toml，再填写本地 API Key。
+
+[model]
+# Provider 名称仅用于日志和错误信息，不参与协议判断。
+provider = "deepseek"
+
+# DeepSeek 官方 OpenAI-compatible API 地址。
+base_url = "https://api.deepseek.com"
+
+# 请只在本地 model.toml 中填写真实密钥。
+api_key = ""
+
+# 默认使用的 DeepSeek 模型。
+model = "deepseek-v4-flash"
+
+# 网络和 SDK 重试配置。
+timeout_seconds = 120.0
+max_retries = 2
+
+# 默认生成参数；具体请求可以在代码中覆盖。
+temperature = 0.2
+max_tokens = 4096
+stream_include_usage = true
+
+# DeepSeek 思考模式：enabled、disabled 或留空。
+thinking_mode = "disabled"
+reasoning_effort = "medium"
+
+# Provider 专属请求参数会原样传入 OpenAI SDK 的 extra_body。
+[model.extra_body]

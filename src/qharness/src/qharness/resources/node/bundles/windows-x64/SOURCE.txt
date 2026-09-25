@@ -1,0 +1,13 @@
+QHarness 托管 Node.js 运行时来源
+
+项目：Node.js 官方 Windows 二进制归档
+版本：Node.js 24.21.0 LTS
+目标：Windows x64
+用途：运行 Anthropic SRT CLI，并作为沙箱内 JavaScript 的默认解释器
+页面：https://nodejs.org/download/release/v24.21.0/
+下载：https://nodejs.org/download/release/v24.21.0/node-v24.21.0-win-x64.zip
+摘要：https://nodejs.org/download/release/v24.21.0/SHASUMS256.txt
+SHA-256：158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541
+
+归档由 Node.js 官方发布。QHarness 不修改归档内容，首次使用时下载并在
+校验文件大小和 SHA-256 后安装到应用私有运行时目录。

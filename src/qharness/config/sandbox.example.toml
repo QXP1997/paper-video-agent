@@ -1,0 +1,43 @@
+# QHarness 沙箱动态配置模板。
+# runtime 和 SRT 路径相对于本配置文件；文件系统策略中的相对路径
+# 则相对于当前 Agent Run 的工作区根目录。
+
+[sandbox]
+backend = "srt"
+timeout_seconds = 60.0
+max_stdout_chars = 100000
+max_stderr_chars = 100000
+runtime_directory = "../.qharness/runtime/sandbox"
+
+[sandbox.srt]
+# 未配置 python_path 时使用 QHarness 托管 Python；显式配置后不可用会报错。
+# python_path = "C:/Users/用户名/anaconda3/python.exe"
+# 未配置 node_path 时自动下载并使用 QHarness 托管 Node；只有用户明确选择
+# 自定义 Node 时才填写路径，不可用时不会静默回退。
+# node_path = "C:/Program Files/nodejs/node.exe"
+# 未配置 package_path 时按锁文件自动下载固定版本的 SRT。
+# package_path = "../custom/sandbox-runtime"
+# 固定版本可以避免 SRT 预览版升级后策略语义悄然变化。
+expected_version = "0.0.74"
+# 开启后会把 SRT 原生日志实时转发到 QHarness 的 DEBUG 日志；生产环境可关闭。
+debug = true
+
+[sandbox.filesystem]
+# 允许读取当前工作区，并禁止读取工作区内的 .env。
+# Windows SRT 0.0.74 不宜直接拒绝整个用户主目录；需要保护的宿主配置目录
+# 应在实际 sandbox.toml 中追加为绝对路径。
+allow_read = ["."]
+deny_read = [".env"]
+# 命令可以修改工作区文件，但不能修改环境变量文件和 Git 元数据。
+# QHarness 配置及运行数据位于工作区之外，不需要在这里重复拒绝。
+allow_write = ["."]
+deny_write = [
+    ".env",
+    ".git",
+]
+
+[sandbox.network]
+# 空白名单表示默认断网；需要联网的工具应只增加必要域名。
+allowed_domains = []
+denied_domains = []
+allow_local_binding = false
