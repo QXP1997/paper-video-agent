@@ -11,7 +11,6 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 Version = Annotated[int, Field(strict=True, ge=1)]
 
@@ -95,16 +94,27 @@ class Criterion(ContractModel):
     description: Text
 
 
+class ActiveSkill(ContractModel):
+    """任务显式启用的 Skill 快照；安装或发现本身不会写入这里。"""
+
+    name: Annotated[str, StringConstraints(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=64)]
+    description: Text
+    instructions: Text
+    digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
 class TaskContract(ContractModel):
     task_id: Text
     version: Version = 1
     objective: Text
     criteria: tuple[Criterion, ...] = Field(min_length=1)
     constraints: tuple[Text, ...] = ()
+    active_skills: tuple[ActiveSkill, ...] = ()
 
     @model_validator(mode="after")
     def validate_ids(self) -> Self:
         unique(tuple(c.id for c in self.criteria), "任务验收项")
+        unique(tuple(skill.name for skill in self.active_skills), "已启用 Skill")
         return self
 
 

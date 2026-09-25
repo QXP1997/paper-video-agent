@@ -12,6 +12,10 @@ class QHarnessError(Exception):
     """QHarness 所有业务异常的基类。"""
 
 
+class SkillConfigurationError(QHarnessError, ValueError):
+    """Skill 清单、名称、资源路径或激活状态不合法。"""
+
+
 class LoopTransitionError(QHarnessError, ValueError):
     """推理状态转换违反阶段、身份、版本或任务契约约束。"""
 

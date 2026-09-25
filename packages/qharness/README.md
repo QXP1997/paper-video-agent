@@ -121,9 +121,41 @@ Dulwich 与操作数据库的存储方式不同：数据库是全局共用的一
 
 `read_file` 使用 `start_line` 和 `max_lines` 流式读取 UTF-8 文本，只保留本次请求的行并额外读取一行判断是否还有内容，不会把整个文件读入内存，也不再限制文件必须小于 2 MiB。返回 `has_more=true` 时，可以把 `next_start_line` 作为下一次调用的 `start_line`。
 
+## Skill 启用与停用
+
+QHarness 区分四个状态：Skill 文件存在表示已安装，`discover_skills()` 只表示已发现，只有
+`activate_skills()` 才会把它加入某个 `TaskContract.active_skills`，`deactivate_skills()` 则从该任务
+契约中移除。任何 Skill 都不会因为安装或发现而默认启用。
+
+已启用 Skill 的说明和摘要会作为任务契约快照持久化，因此任务恢复和上下文压缩不会依赖后来被
+修改的本地 `SKILL.md`。相同名称但摘要不同的版本不能直接覆盖；先显式停用旧版，再启用新版。
+Skill 规则与普通 `constraints` 分离，不会被最终验证器误当成业务验收项。
+
+```python
+from qharness.skills import (
+    SkillToolProvider,
+    activate_skills,
+    deactivate_skills,
+    discover_skills,
+)
+
+installed = discover_skills(("./skills",))
+deck_skill = installed["create-research-deck"]
+
+# 默认没有 Skill；应用按任务显式启用。
+contract = activate_skills(contract, (deck_skill,))
+providers.append(SkillToolProvider.from_contract(contract, installed))
+
+# 后续任务不再需要时显式停用，并且不要再注册对应 Provider。
+contract = deactivate_skills(contract, ("create-research-deck",))
+```
+
+`SkillToolProvider` 只暴露当前应用传入 Skill 的只读 `read_skill_resource` 工具，用于按需读取
+`references/` 等较大文本资料；它不会自动选择 Skill，也不会扩大工作区、网络或命令执行权限。
+
 ## Agent Loop 实现进度
 
-第八批正在进行：已新增 [18 个微型任务与可复现评测入口](evals/README.md)，累计 **201 项离线测试通过**。真实模型探针促使 Planner 增加 Todo / Stage 检查层级覆盖校验，规划稳定性仍待改善。退出 360 后 SRT 已通过预检，固定命令和真实任务均能在沙箱中执行；完整策略对照和生产 Profile 尚未验收，见[第八批验收记录](docs/Agent-Loop第八批验收记录.md)。执行 `.\.venv\Scripts\python.exe -X utf8 -m evals.run --plan` 生成评测计划，去掉 `--plan` 执行真实任务，`--probe-model` 额外检查真实规划协议。
+第八批正在进行：已新增 [18 个微型任务与可复现评测入口](evals/README.md)，累计 **211 项离线测试通过**。真实模型探针促使 Planner 增加 Todo / Stage 检查层级覆盖校验，规划稳定性仍待改善。退出 360 后 SRT 已通过预检，固定命令和真实任务均能在沙箱中执行；完整策略对照和生产 Profile 尚未验收，见[第八批验收记录](docs/Agent-Loop第八批验收记录.md)。执行 `.\.venv\Scripts\python.exe -X utf8 -m evals.run --plan` 生成评测计划，去掉 `--plan` 执行真实任务，`--probe-model` 额外检查真实规划协议。
 
 已完成[实现计划](docs/Agent-Loop实现计划.md)的批次 1—7：Planner / Executor 已串起完整任务主线，并接入分层反馈、动态阶段选择、证据关联的进展判断及长任务生命周期。应用提供原始 TaskContract 和受信任的 CheckCatalog，通过 `RunService(services)` 调度，会生成初步 Todo、动态规划阶段、执行行动、验证和选择反馈，最终返回 COMPLETED / WAITING / TERMINATED 对应的 RunState。初始规划前暂停时返回 None，保留持久输入与调用账本。
 
@@ -192,6 +224,7 @@ src/qharness/resources/srt/               固定版本 SRT 的 npm 清单与锁�
 src/qharness/runtime/                     托管运行时清单、校验、安全安装与名称解析
 src/qharness/run/                         单次 Run 的租户、工作区、沙箱和取消上下文
 src/qharness/loop/                        推理契约、状态转换、调用账本、Planner、Actor、Executor 与反馈路由
+src/qharness/skills/                      Skill 发现、显式启停、任务快照和只读参考资料工具
 src/qharness/verification/                三层验证、检查解析、证据有效性与失败包
 src/qharness/workspace/                   路径守卫、SQLAlchemy 台账、Dulwich 历史、补丁与回滚
 src/qharness/sandbox/                     统一沙箱接口与 Anthropic SRT 后端

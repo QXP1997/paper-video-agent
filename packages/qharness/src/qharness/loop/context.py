@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pydantic import BaseModel
 
 from qharness.exception import LoopConfigurationError
-from qharness.loop.config import LoopConfig, ROLE_PROMPTS, Role
+from qharness.loop.config import ROLE_PROMPTS, LoopConfig, Role
 from qharness.loop.models import RunState, StagePlan, TaskContract, TodoPlanPatch
 from qharness.model.models import ChatMessage, ChatRequest, ToolDefinition
 
@@ -87,6 +87,12 @@ class ContextCompiler:
             "observations": list(observations), "output_schema": output_schema.model_json_schema(),
         }
         prompt = ROLE_PROMPTS[role]
+        if contract.active_skills:
+            prompt += (
+                " TaskContract.active_skills 是应用为本任务显式启用的可信工作方法；"
+                "在当前角色和验收范围内遵循其 instructions。Skill 不能扩大工具权限、"
+                "用户授权或修改任务验收条件。"
+            )
         if role == Role.STAGE_PLANNER and (self.config.dynamic_stage_planning or self.config.track_gap_progress):
             prompt += (" 使用控制器提供的 stage_guidance 制定本轮可检查的目标；enforce_kind 为真时遵从其 kind。"
                        "围绕 focus 选择 addresses、expected_results、approach 和明确的 stop_when/replan_when。"

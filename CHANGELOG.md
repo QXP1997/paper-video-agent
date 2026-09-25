@@ -6,8 +6,10 @@
 
 ### Added
 
-- 将 QHarness 作为 `src/qharness` 下的独立子项目迁入工作台，并保留原仓库的完整 Git 提交链、
+- 将 QHarness 作为 `packages/qharness` 下的独立子项目迁入工作台，并保留原仓库的完整 Git 提交链、
   独立打包配置、测试、文档和运行时资源。
+- 为 QHarness 增加通用 Skill 发现、显式启用、停用、任务快照和只读参考资料工具；安装或发现
+  Skill 不会默认启用。
 
 ### Changed
 

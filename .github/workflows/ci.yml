@@ -37,3 +37,26 @@ jobs:
           DEEPSEEK_API_KEY: test-key
         run: pytest --cov=paper_video_agent --cov-report=term-missing
 
+  qharness-test:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: packages/qharness
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: packages/qharness/pyproject.toml
+
+      - name: Install QHarness
+        run: python -m pip install -e .
+
+      - name: Test QHarness
+        run: python -m unittest discover -s tests

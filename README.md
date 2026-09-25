@@ -308,8 +308,9 @@ Windows 会自动尝试微软雅黑。macOS/Linux 建议安装 Noto Sans CJK，�
 时间轴逻辑：
 
 ```text
+packages/
+└── qharness/              # 独立的 Coding Agent Harness 子项目，保留包、测试和 Git 历史
 src/
-├── qharness/              # 独立的 Coding Agent Harness 子项目，保留自己的包、测试和 Git 历史
 ├── research_agent_core/   # Agent 通用基础设施：文档解析、缓存、环境配置和提示词序列化
 │   └── document/          # 共享 PDF/MinerU 解析、视觉元素提取、解析缓存和整页渲染
 ├── research_video_core/   # 视频通用能力：TTS、字幕切分、SRT、音频与视觉时间轴
@@ -324,7 +325,7 @@ QHarness 作为仓库内的独立 Python 子项目维护。需要开发或运行
 额外执行：
 
 ```bash
-python -m pip install -e ./src/qharness
+python -m pip install -e ./packages/qharness
 ```
 
 根项目不会复制 QHarness 的运行时实现，也不会把它的嵌套源码打进 `paper-video-agent` 包；后续
@@ -334,6 +335,7 @@ Presentation Agent 通过公开的 `qharness` 包接口接入循环、工具、�
 
 ```bash
 python -m pip install -e ".[dev]"
+python -m pip install -e ./packages/qharness
 ruff check .
 pytest
 ```

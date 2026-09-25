@@ -50,7 +50,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-exclude = ["qharness", "qharness.*"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
@@ -59,7 +58,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = ["paper", "src/qharness"]
+extend-exclude = ["paper", "packages/qharness"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
