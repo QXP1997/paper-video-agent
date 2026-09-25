@@ -1,6 +1,6 @@
 # Contributing
 
-感谢你对 Paper Video Agent 的关注。
+感谢你对 Research Agent Workbench 的关注。
 
 ## 开始之前
 
@@ -30,4 +30,3 @@ pytest
 
 Pull Request 描述应包含变更背景、实现方式、验证结果和必要的截图或样例。尽量保持一次 PR
 只解决一个主题，避免夹带无关格式化或重构。
-

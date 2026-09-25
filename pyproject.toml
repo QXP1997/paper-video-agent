@@ -29,6 +29,11 @@ dependencies = [
     "PyMuPDF>=1.26,<2.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/QXP1997/research-agent-workbench"
+Repository = "https://github.com/QXP1997/research-agent-workbench"
+Issues = "https://github.com/QXP1997/research-agent-workbench/issues"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<10.0",

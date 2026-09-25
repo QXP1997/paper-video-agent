@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 顶层项目更名为 Research Agent Workbench；Paper Video Agent 作为首个独立 Agent 保留，
+  现有 Python 包名与命令保持兼容。
+
 ## [0.2.0] - 2026-09-25
 
 ### Added
