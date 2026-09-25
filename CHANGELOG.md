@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-25
+
 ### Added
 
 - 新增限定在章节 `source_pages` 内的口播事实审核节点，输出可缓存的 `script_audit.json`。
