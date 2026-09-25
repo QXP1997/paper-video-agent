@@ -124,7 +124,7 @@ ffmpeg -filters
 ## 安装
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/QXP1997/research-agent-workbench.git
 cd research-agent-workbench
 python -m venv .venv
 ```
