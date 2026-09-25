@@ -37,14 +37,13 @@
 
 ## 效果展示
 
-点击封面可观看视频：已发布的示例会跳转到 Bilibili 完整视频，其余示例播放带声音的
-12 秒 H.264/MP4 预览。
+点击封面可前往 Bilibili 观看完整视频。
 
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="docs/examples/spatiotemporal-composability.mp4">
-        <img src="docs/examples/spatiotemporal-composability.jpg" width="240" alt="时空可组合性视频预览">
+      <a href="https://www.bilibili.com/video/BV1oXhy6YEK4/">
+        <img src="docs/examples/react.jpg" width="240" alt="ReAct 论文精讲视频预览">
       </a>
     </td>
     <td align="center" width="33%">
@@ -59,7 +58,10 @@
     </td>
   </tr>
   <tr>
-    <td align="center"><strong>时空可组合性编程范式</strong></td>
+    <td align="center">
+      <strong>ReAct：让大模型边想边做</strong><br>
+      <sub>ReAct · <a href="https://www.bilibili.com/video/BV1oXhy6YEK4/">Bilibili 完整视频</a></sub>
+    </td>
     <td align="center">
       <strong>35B 小模型如何打赢长任务</strong><br>
       <sub>Occamy-1.0 · <a href="https://www.bilibili.com/video/BV1omeb6aE4z/">Bilibili 完整视频</a></sub>
