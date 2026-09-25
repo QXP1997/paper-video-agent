@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "paper-video-agent"
 version = "0.1.0"
-description = "Turn research-paper PDFs into narrated vertical explainer videos."
+description = "Turn research-paper PDFs into evidence-aware Chinese explainer videos."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
