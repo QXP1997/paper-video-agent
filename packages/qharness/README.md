@@ -4,6 +4,8 @@ QHarness 是一个本地优先的 Coding Agent Harness。当前首先实现模�
 
 ## 环境准备
 
+QHarness 与工作台统一使用 Python 3.13.15，版本由仓库根目录的 `.python-version` 声明。
+
 ```powershell
 .\.venv\Scripts\python.exe -m ensurepip --upgrade
 .\.venv\Scripts\python.exe -m pip install -e .
@@ -62,6 +64,7 @@ model = "deepseek-v4-flash"
 .\.venv\Scripts\python.exe .\examples\12_file_mutation_history.py
 .\.venv\Scripts\python.exe .\examples\13_file_rollback_conflict.py
 .\.venv\Scripts\python.exe .\examples\14_apply_patch.py
+.\.venv\Scripts\python.exe .\examples\22_presentation_skill.py
 ```
 
 示例用途：
@@ -80,6 +83,16 @@ model = "deepseek-v4-flash"
 12. 演示文件完整写入、精确替换、Diff、历史查询和安全回滚。
 13. 模拟用户后续编辑，验证回滚不会覆盖较新的文件内容。
 14. 一次补丁修改多个文件，查询 Dulwich Commit 历史并整体回滚。
+22. 启动真实 QHarness Agent，读取统一演示文稿 Skill 和 MinerU 结果，自主生成 Spec 与 PPTX。
+
+示例 22 专供 PyCharm 断点调试，输入论文、运行名称、输出位置和 PptxGenJS 依赖都集中写在
+脚本顶部。它不会直接调用渲染器，而是启动 Agent Loop，让 Actor 读取 Skill reference、分析
+MinerU 输入、写入 Spec，再通过 `run_command` 发起校验和 PPTX 渲染。模型配置优先使用本地
+`config/model.toml`；没有该文件时，调试示例复用仓库根目录 `.env` 中已有的 DeepSeek 配置：
+
+```powershell
+.\.venv\Scripts\python.exe .\packages\qharness\examples\22_presentation_skill.py
+```
 
 ## Anthropic SRT 沙箱
 

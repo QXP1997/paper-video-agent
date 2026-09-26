@@ -111,6 +111,24 @@ class SkillCatalogTests(unittest.TestCase):
         with self.assertRaises(SkillConfigurationError):
             self.catalog.load_fixed("create-demo-deck")
 
+    def test_resource_change_requires_reimport_and_updates_managed_copy(self) -> None:
+        source = write_skill(self.root / "source")
+        self.catalog.import_skill(source)
+        source_reference = source / "references" / "schema.md"
+        source_reference.write_text("更新后的演示文稿结构约定。\n", encoding="utf-8")
+
+        with self.assertRaises(SkillConfigurationError):
+            self.catalog.import_skill(source)
+
+        updated = self.catalog.import_skill(source, update=True)
+
+        managed_reference = updated.skill_path.parent / "references" / "schema.md"
+        self.assertEqual(
+            managed_reference.read_text(encoding="utf-8"),
+            "更新后的演示文稿结构约定。\n",
+        )
+        self.assertEqual(self.catalog.load_fixed("create-demo-deck").digest, updated.digest)
+
 
 if __name__ == "__main__":
     unittest.main()

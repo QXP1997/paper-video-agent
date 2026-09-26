@@ -1,4 +1,0 @@
-interface:
-  display_name: "研究演示文稿"
-  short_description: "将论文与技术材料中的研究证据整理为可编辑、可复用的中文演示文稿规格"
-  default_prompt: "使用 $create-research-deck 把这份研究材料整理成有证据支撑的中文演示文稿。"

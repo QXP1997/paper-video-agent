@@ -7,7 +7,7 @@ name = "qharness"
 version = "0.1.0"
 description = "Coding Agent Harness"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "alembic>=1.14.0,<2.0.0",
     "dulwich>=0.22.8,<0.25.0",

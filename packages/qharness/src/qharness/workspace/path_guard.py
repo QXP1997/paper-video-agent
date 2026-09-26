@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+import ntpath
 import os
 from dataclasses import dataclass
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 from qharness.exception import (
     WorkspaceConfigurationError,
@@ -127,7 +128,7 @@ class WorkspacePathGuard:
                 raise WorkspacePathError(
                     f"Windows 工作区路径组件不能以点或空格结尾：{path}"
                 )
-            if PureWindowsPath(part).is_reserved():
+            if ntpath.isreserved(part):
                 raise WorkspacePathError(
                     f"Windows 工作区路径不能使用系统保留名称：{path}"
                 )

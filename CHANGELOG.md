@@ -10,11 +10,18 @@
   独立打包配置、测试、文档和运行时资源。
 - 为 QHarness 增加通用 Skill 托管目录、SQLite 元数据索引、启用/停用、任务快照和只读
   参考资料工具；Skill 整目录导入 `.qharness/skills`，新导入项默认停用。
-- 新增 Presentation Agent 基础层、`create-research-deck` Skill 与渲染器无关的
+- 新增 Presentation Agent 基础层、`create-presentation` Skill 与渲染器无关的
   `SlideDeckSpec`，支持来源、素材、讲稿、视觉构建步骤和确定性引用校验。
+- 将内容设计和 PPTX 渲染合并为一个两阶段的 `create-presentation` Skill，支持论文、博客、文档、
+  技术知识、数据集和用户笔记等通用输入。
+- 新增 `research-pptx` 渲染入口，使用开源 PptxGenJS 生成可编辑 PPTX、原生表格/图表和演讲备注。
 
 ### Changed
 
+- 项目开发环境、CI、根包与 QHarness 统一使用 Python 3.13.15；QHarness 作为所有业务 Agent
+  共用的底层 Harness，并在根项目安装与测试前优先安装。
+- Skill 摘要覆盖 `SKILL.md`、脚本、参考资料和其他资源，资源内容变化后会要求重新导入，避免
+  任务继续绑定到实现已经变化的旧 Skill。
 - 顶层项目更名为 Research Agent Workbench；Paper Video Agent 作为首个独立 Agent 保留，
   现有 Python 包名与命令保持兼容。
 - 抽取 `research_agent_core` 与 `research_video_core` 共享层，统一缓存、环境配置、TTS、字幕和

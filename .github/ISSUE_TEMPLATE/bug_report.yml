@@ -34,7 +34,7 @@ body:
     id: environment
     attributes:
       label: 运行环境
-      placeholder: Windows 11 / Python 3.12 / FFmpeg 8.x
+      placeholder: Windows 11 / Python 3.13.15 / FFmpeg 8.x
     validations:
       required: true
   - type: textarea
@@ -43,4 +43,3 @@ body:
       label: 日志
       description: 请移除 API Key、路径中的个人信息和受版权保护的论文内容。
       render: shell
-

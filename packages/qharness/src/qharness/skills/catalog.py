@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import tempfile
 import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -204,7 +203,11 @@ class SkillCatalog:
             return self._metadata(record)
 
     def _replace_managed_directory(self, source_root: Path, target_root: Path) -> None:
-        staging_parent = Path(tempfile.mkdtemp(prefix=".skill-import-", dir=self.skill_root))
+        # tempfile.mkdtemp() 在 Windows 会创建仅当前用户可访问的目录；目录随后
+        # 原子移动到托管位置时会保留这份 ACL，导致 SRT 专用账户无法读取 Skill。
+        # 直接在 skill_root 下按普通目录权限创建暂存区，让文件继承托管根目录 ACL。
+        staging_parent = self.skill_root / f".skill-import-{uuid.uuid4().hex}"
+        staging_parent.mkdir()
         staged_root = staging_parent / target_root.name
         backup_root: Path | None = None
         try:

@@ -1,0 +1,4 @@
+interface:
+  display_name: "演示文稿设计与生成"
+  short_description: "把论文、博客、文档和技术知识先整理成 Spec，再生成可编辑 PPTX"
+  default_prompt: "使用 $create-presentation 把这份材料整理成演示文稿；需要 PPT 时继续生成可编辑的 PowerPoint。"

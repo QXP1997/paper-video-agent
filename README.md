@@ -109,7 +109,7 @@ flowchart LR
 
 ## 环境要求
 
-- Python 3.11 或更高版本（当前已在 Python 3.12 上验证）
+- Python 3.13.15。项目开发环境、CI 与 QHarness 托管 Python 统一使用该版本
 - [FFmpeg](https://ffmpeg.org/) 和 `ffprobe`，且二者均已加入 `PATH`
 - 可访问 MinerU、DeepSeek API 与 Edge TTS 服务的网络环境
 - 一个支持中文的字体
@@ -135,6 +135,7 @@ Windows PowerShell：
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
+python -m pip install -e ./packages/qharness
 python -m pip install -e .
 Copy-Item .env.example .env
 ```
@@ -144,6 +145,7 @@ macOS/Linux：
 ```bash
 source .venv/bin/activate
 python -m pip install --upgrade pip
+python -m pip install -e ./packages/qharness
 python -m pip install -e .
 cp .env.example .env
 ```
@@ -324,15 +326,16 @@ src/
 PDF 解析结果，技术网页解说等 Agent 也可以复用缓存与视频能力，只实现自己的内容采集、证据模型
 和讲稿规划。共享模块不应反向依赖具体 Agent。
 
-QHarness 作为仓库内的独立 Python 子项目维护。需要开发或运行 Agent Loop 时，在同一虚拟环境中
-额外执行：
+QHarness 是工作台中所有 Agent 共用的底层 Harness，同时保留为仓库内的独立 Python 子项目。
+根项目与 QHarness 统一使用仓库 `.python-version` 声明的 Python 3.13.15；安装工作台时先在同一
+虚拟环境中安装 QHarness：
 
 ```bash
 python -m pip install -e ./packages/qharness
 ```
 
-根项目不会复制 QHarness 的运行时实现，也不会把它的嵌套源码打进 `paper-video-agent` 包；后续
-Presentation Agent 通过公开的 `qharness` 包接口接入循环、工具、恢复和验证能力。
+根项目不会复制 QHarness 的运行时实现，也不会把它的嵌套源码打进 `paper-video-agent` 包；各业务
+Agent 通过公开的 `qharness` 包接口接入循环、工具、恢复和验证能力。
 
 Presentation Agent 当前以 `deck_spec.json` 为事实来源，而不是把 PPTX 写死为唯一输出。该规格可以被
 后续的 PPTX、网页幻灯片或视频渲染器复用，已提供以下确定性检查命令：
@@ -340,9 +343,13 @@ Presentation Agent 当前以 `deck_spec.json` 为事实来源，而不是把 PPT
 ```bash
 python -m research_presentation_core validate /path/to/deck_spec.json
 python -m research_presentation_core schema
+# 在 QHarness 沙箱或其他已配置 PptxGenJS 的 Node 运行时中生成 PPTX
+research-pptx /path/to/deck_spec.json /path/to/output.pptx
 ```
 
-PPT 生成规则实现为 `create-research-deck` Skill。QHarness 把导入的整套 Skill 统一托管在
+PPT 生成由一个统一 Skill `create-presentation` 负责，内部按两个阶段执行：先从论文、博客、文档、
+技术知识或笔记生成并校验 `SlideDeckSpec`，再按同一份 Spec 使用开源 PptxGenJS 渲染成可编辑的
+PowerPoint。QHarness 把导入的整套 Skill 统一托管在
 `.qharness/skills/<code>/`，SQLite 只索引 `SKILL.md` 入口路径、中文名称、描述、摘要、
 扩展元数据和启停状态。通用对话 Agent 只查询已启用项；`presentation_agent` 作为内置业务
 Agent，按固定 code 加载所需 Skill，不受前端启停开关影响。设计与接入示例见
@@ -351,8 +358,8 @@ Agent，按固定 code 加载所需 Skill，不受前端启停开关影响。设
 ## 开发
 
 ```bash
-python -m pip install -e ".[dev]"
 python -m pip install -e ./packages/qharness
+python -m pip install -e ".[dev]"
 ruff check .
 pytest
 ```

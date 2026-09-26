@@ -16,6 +16,35 @@ _SKILL_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MAX_SKILL_BYTES = 128 * 1024
 
 
+def _skill_digest(root: Path) -> str:
+    """计算整个 Skill 目录的稳定摘要，而不只校验入口文档。"""
+
+    digest = hashlib.sha256()
+    try:
+        entries = sorted(
+            root.rglob("*"),
+            key=lambda item: item.relative_to(root).as_posix(),
+        )
+        for entry in entries:
+            if entry.is_symlink():
+                raise SkillConfigurationError("Skill 目录不允许包含符号链接")
+            if not entry.is_file():
+                continue
+            relative_path = entry.relative_to(root).as_posix().encode("utf-8")
+            digest.update(b"file\0")
+            digest.update(relative_path)
+            digest.update(b"\0")
+            with entry.open("rb") as resource:
+                while chunk := resource.read(1024 * 1024):
+                    digest.update(chunk)
+            digest.update(b"\0")
+    except SkillConfigurationError:
+        raise
+    except OSError as error:
+        raise SkillConfigurationError(f"无法计算 Skill 目录摘要: {root}") from error
+    return digest.hexdigest()
+
+
 def _unquote(value: str) -> str:
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] == '"':
@@ -86,7 +115,7 @@ def load_skill(path: str | Path) -> Skill:
     if not instructions:
         raise SkillConfigurationError("Skill 指令正文不能为空")
 
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    digest = _skill_digest(root)
     return Skill(
         name=name,
         display_name=display_name,

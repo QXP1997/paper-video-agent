@@ -7,7 +7,7 @@ name = "paper-video-agent"
 version = "0.2.0"
 description = "Turn research-paper PDFs into evidence-aware Chinese explainer videos."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13,<3.14"
 license = "MIT"
 keywords = ["paper", "pdf", "video", "tts", "deepseek"]
 classifiers = [
@@ -15,8 +15,7 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Video",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -45,6 +44,7 @@ dev = [
 paper-video = "paper_video_agent.paper2video:main"
 paper-video-metadata = "paper_video_agent.social_metadata:main"
 research-deck = "research_presentation_core.cli:main"
+research-pptx = "presentation_agent.pptx:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -54,8 +54,11 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 presentation_agent = [
-    "skills/create-research-deck/SKILL.md",
-    "skills/create-research-deck/agents/openai.yaml",
+    "skills/create-presentation/SKILL.md",
+    "skills/create-presentation/agents/openai.yaml",
+    "skills/create-presentation/references/*.md",
+    "skills/create-presentation/scripts/*.py",
+    "skills/create-presentation/scripts/*.mjs",
 ]
 
 [tool.pytest.ini_options]
@@ -64,7 +67,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 extend-exclude = ["paper", "packages/qharness"]
 
 [tool.ruff.lint]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -46,12 +46,13 @@ class AssetSpec(DeckModel):
     ] = "source"
     path: str | None = None
     prompt: str | None = None
+    data: dict[str, Any] | None = None
     citations: tuple[Citation, ...] = ()
 
     @model_validator(mode="after")
     def validate_materialization(self) -> Self:
-        if not self.path and not self.prompt:
-            raise ValueError("Asset 必须提供已有 path 或可执行的生成 prompt")
+        if not self.path and not self.prompt and self.data is None:
+            raise ValueError("资产必须提供已有 path、可执行的生成 prompt 或可编辑数据")
         return self
 
 
